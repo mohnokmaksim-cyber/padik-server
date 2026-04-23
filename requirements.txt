@@ -3,3 +3,4 @@ pymongo==4.17.0
 python-dotenv==1.2.2
 pyjwt==2.12.1
 requests==2.33.1
+gunicorn
