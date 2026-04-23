@@ -1,6 +1,5 @@
-flask
-flask-cors
-pymongo
-dnspython
-gunicorn
-
+flask==3.1.3
+pymongo==4.17.0
+python-dotenv==1.2.2
+pyjwt==2.12.1
+requests==2.33.1
