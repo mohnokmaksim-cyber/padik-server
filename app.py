@@ -43,6 +43,10 @@ EMAIL_PASS = os.getenv('EMAIL_PASS')
 SMTP_HOST = 'smtp.gmail.com'
 SMTP_PORT = 587
 
+print(f"[STARTUP] EMAIL_USER: {EMAIL_USER}")
+print(f"[STARTUP] EMAIL_PASS configured: {bool(EMAIL_PASS)}")
+print(f"[STARTUP] MONGODB_URI: {MONGODB_URI[:50]}...")
+
 # Helper functions
 def generate_verification_code():
     """Generate a 6-digit verification code"""
@@ -51,10 +55,13 @@ def generate_verification_code():
 def send_verification_email(email, code):
     """Send verification code via Gmail SMTP"""
     try:
+        print(f"[EMAIL] Starting send_verification_email for {email}")
+        
         if not EMAIL_USER or not EMAIL_PASS:
-            print(f"[WARNING] Email credentials not configured. Code: {code}")
+            print(f"[EMAIL ERROR] Email credentials not configured. EMAIL_USER: {EMAIL_USER}, EMAIL_PASS: {bool(EMAIL_PASS)}")
             return False
         
+        print(f"[EMAIL] Creating message...")
         # Create message
         msg = MIMEMultipart('alternative')
         msg['Subject'] = 'Padik - Код подтверждения'
@@ -98,17 +105,30 @@ def send_verification_email(email, code):
         
         msg.attach(MIMEText(html, 'html'))
         
+        print(f"[EMAIL] Connecting to SMTP server {SMTP_HOST}:{SMTP_PORT}...")
         # Send email
         with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            print(f"[EMAIL] Connected to SMTP server")
             server.starttls()
+            print(f"[EMAIL] TLS started")
             server.login(EMAIL_USER, EMAIL_PASS)
+            print(f"[EMAIL] Logged in as {EMAIL_USER}")
             server.send_message(msg)
+            print(f"[EMAIL] Message sent successfully")
         
-        print(f"[EMAIL SENT] Code sent to {email}")
+        print(f"[EMAIL SUCCESS] Code sent to {email}")
         return True
     
+    except smtplib.SMTPAuthenticationError as e:
+        print(f"[EMAIL ERROR] Authentication failed: {str(e)}")
+        return False
+    except smtplib.SMTPException as e:
+        print(f"[EMAIL ERROR] SMTP error: {str(e)}")
+        return False
     except Exception as e:
         print(f"[EMAIL ERROR] Failed to send email to {email}: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
 
 def generate_jwt_token(user_id, email):
@@ -178,18 +198,25 @@ def send_code():
     data = request.get_json()
     email = data.get('email', '').strip().lower()
     
+    print(f"\n[DEBUG] ===== send_code called =====")
+    print(f"[DEBUG] Email: {email}")
+    
     if not email:
+        print(f"[DEBUG] Email is empty")
         return jsonify({'error': 'Email is required'}), 400
     
     # Check if email is valid (basic validation)
     if '@' not in email:
+        print(f"[DEBUG] Invalid email format")
         return jsonify({'error': 'Invalid email format'}), 400
     
     try:
         # Generate verification code
         code = generate_verification_code()
+        print(f"[DEBUG] Generated code: {code}")
         
         # Store verification code in database
+        print(f"[DEBUG] Storing code in database...")
         verification_codes_collection.update_one(
             {'email': email},
             {
@@ -201,9 +228,12 @@ def send_code():
             },
             upsert=True
         )
+        print(f"[DEBUG] Code stored in database")
         
         # Send email with code
+        print(f"[DEBUG] Calling send_verification_email...")
         email_sent = send_verification_email(email, code)
+        print(f"[DEBUG] send_verification_email returned: {email_sent}")
         
         # ✅ FIXED: Return error status if email send failed
         if not email_sent:
@@ -213,9 +243,10 @@ def send_code():
                 'code': 'EMAIL_SEND_FAILED'
             })
             response.headers.add('Access-Control-Allow-Origin', '*')
-            return response, 500  # ✅ Return 500 instead of 200
+            return response, 500
         
         # ✅ Success response
+        print(f"[DEBUG] Returning success response")
         response = jsonify({
             'success': True,
             'message': 'Verification code sent to email',
@@ -226,6 +257,8 @@ def send_code():
     
     except Exception as e:
         print(f"[ERROR] Exception in send_code: {e}")
+        import traceback
+        traceback.print_exc()
         response = jsonify({
             'error': 'An unexpected error occurred while sending verification code',
             'code': 'INTERNAL_ERROR'
