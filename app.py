@@ -250,7 +250,7 @@ def verify_code():
         if datetime.utcnow() > verification_record['expires_at']:
             return jsonify({'error': 'Verification code has expired'}), 400
         
-        # Check if user exists
+        # Check if user exists and if profile is complete
         user = users_collection.find_one({'email': email})
         is_new_user = False
         
@@ -261,6 +261,8 @@ def verify_code():
                 {'$set': {'last_login': datetime.utcnow()}}
             )
             user_id = str(user['_id'])
+            # Check if profile is complete (name is filled)
+            is_new_user = not user.get('is_profile_complete', False) or user.get('name') is None
         else:
             # New user - create draft user (only email)
             new_user = {
@@ -573,4 +575,69 @@ def search_users():
         return response, 500
 
 if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000) 
+    app.run(debug=False, host='0.0.0.0', port=5000)
+
+@app.route('/upload_avatar', methods=['POST', 'OPTIONS'])
+@token_required
+def upload_avatar():
+    """Upload user avatar"""
+    # Handle CORS preflight
+    if request.method == 'OPTIONS':
+        response = jsonify({'status': 'ok'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        response.headers.add('Access-Control-Allow-Methods', 'POST, OPTIONS')
+        response.headers.add('Access-Control-Allow-Headers', 'Content-Type, Authorization')
+        return response, 200
+    
+    data = request.get_json()
+    avatar_base64 = data.get('avatar_base64', '')
+    
+    if not avatar_base64:
+        return jsonify({'error': 'Avatar data is required'}), 400
+    
+    try:
+        from bson import ObjectId
+        import base64
+        import hashlib
+        
+        # Decode base64 image
+        if ',' in avatar_base64:
+            # Remove data URL prefix (e.g., "data:image/jpeg;base64,")
+            avatar_base64 = avatar_base64.split(',')[1]
+        
+        avatar_bytes = base64.b64decode(avatar_base64)
+        
+        # Generate unique filename
+        user_id = request.user_id
+        timestamp = datetime.utcnow().timestamp()
+        filename = f"avatars/{user_id}_{int(timestamp)}.jpg"
+        
+        # In a real app, you would upload to S3 here
+        # For now, we'll just store the base64 string in the database
+        # This is not ideal for production but works for MVP
+        
+        # Update user avatar
+        users_collection.update_one(
+            {'_id': ObjectId(user_id)},
+            {
+                '$set': {
+                    'avatar_url': avatar_base64,  # Store base64 for MVP
+                    'avatar_filename': filename,
+                    'avatar_updated_at': datetime.utcnow()
+                }
+            }
+        )
+        
+        response = jsonify({
+            'status': 'success',
+            'message': 'Avatar uploaded',
+            'avatar_url': avatar_base64
+        })
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 200
+    
+    except Exception as e:
+        print(f"Error uploading avatar: {e}")
+        response = jsonify({'error': 'Failed to upload avatar'})
+        response.headers.add('Access-Control-Allow-Origin', '*')
+        return response, 500
