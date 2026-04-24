@@ -205,17 +205,31 @@ def send_code():
         # Send email with code
         email_sent = send_verification_email(email, code)
         
+        # ✅ FIXED: Return error status if email send failed
+        if not email_sent:
+            print(f"[ERROR] Failed to send verification email to {email}")
+            response = jsonify({
+                'error': 'Could not send verification email. Please check your email address or try again later.',
+                'code': 'EMAIL_SEND_FAILED'
+            })
+            response.headers.add('Access-Control-Allow-Origin', '*')
+            return response, 500  # ✅ Return 500 instead of 200
+        
+        # ✅ Success response
         response = jsonify({
             'success': True,
-            'message': 'Verification code sent to email' if email_sent else 'Code saved (email service unavailable)',
+            'message': 'Verification code sent to email',
             'code': code  # For testing purposes - remove in production
         })
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 200
     
     except Exception as e:
-        print(f"Error sending code: {e}")
-        response = jsonify({'error': 'Failed to send verification code'})
+        print(f"[ERROR] Exception in send_code: {e}")
+        response = jsonify({
+            'error': 'An unexpected error occurred while sending verification code',
+            'code': 'INTERNAL_ERROR'
+        })
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
 
@@ -574,9 +588,6 @@ def search_users():
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
 
-if __name__ == '__main__':
-    app.run(debug=False, host='0.0.0.0', port=5000)
-
 @app.route('/upload_avatar', methods=['POST', 'OPTIONS'])
 @token_required
 def upload_avatar():
@@ -641,3 +652,6 @@ def upload_avatar():
         response = jsonify({'error': 'Failed to upload avatar'})
         response.headers.add('Access-Control-Allow-Origin', '*')
         return response, 500
+
+if __name__ == '__main__':
+    app.run(debug=False, host='0.0.0.0', port=5000)
