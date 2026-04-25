@@ -127,15 +127,55 @@ def send_verification_email(email, code):
         return True
     
     except smtplib.SMTPAuthenticationError as e:
-        print(f"[EMAIL ERROR] Authentication failed: {str(e)}")
-        print(f"[EMAIL ERROR] Check EMAIL_USER and EMAIL_PASS in environment variables")
+        print(f"\n[EMAIL ERROR] ===== ОШИБКА АУТЕНТИФИКАЦИИ ПОЧТЫ =====")
+        print(f"[EMAIL ERROR] Тип: SMTPAuthenticationError")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        print(f"[EMAIL ERROR] EMAIL_USER: {EMAIL_USER}")
+        print(f"[EMAIL ERROR] EMAIL_PASS установлен: {bool(EMAIL_PASS)}")
+        print(f"[EMAIL ERROR] Проверьте: пароль приложения Gmail, двухфакторную аутентификацию")
+        import traceback
+        traceback.print_exc()
+        return False
+    except smtplib.SMTPRecipientsRefused as e:
+        print(f"\n[EMAIL ERROR] ===== ОШИБКА ПОЛУЧАТЕЛЯ =====")
+        print(f"[EMAIL ERROR] Тип: SMTPRecipientsRefused")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        print(f"[EMAIL ERROR] Получатель: {email}")
+        import traceback
+        traceback.print_exc()
+        return False
+    except smtplib.SMTPSenderRefused as e:
+        print(f"\n[EMAIL ERROR] ===== ОШИБКА ОТПРАВИТЕЛЯ =====")
+        print(f"[EMAIL ERROR] Тип: SMTPSenderRefused")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        print(f"[EMAIL ERROR] Отправитель: {EMAIL_USER}")
+        import traceback
+        traceback.print_exc()
+        return False
+    except smtplib.SMTPDataError as e:
+        print(f"\n[EMAIL ERROR] ===== ОШИБКА ДАННЫХ SMTP =====")
+        print(f"[EMAIL ERROR] Тип: SMTPDataError")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
     except smtplib.SMTPException as e:
-        print(f"[EMAIL ERROR] SMTP error: {str(e)}")
+        print(f"\n[EMAIL ERROR] ===== ОШИБКА SMTP =====")
+        print(f"[EMAIL ERROR] Тип: SMTPException")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        import traceback
+        traceback.print_exc()
         return False
     except Exception as e:
-        print(f"[EMAIL ERROR] Failed to send email to {email}: {str(e)}")
+        print(f"\n[EMAIL ERROR] ===== НЕИЗВЕСТНАЯ ОШИБКА ПОЧТЫ =====")
+        print(f"[EMAIL ERROR] Тип: {type(e).__name__}")
+        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
+        print(f"[EMAIL ERROR] Получатель: {email}")
+        print(f"[EMAIL ERROR] SMTP хост: {SMTP_HOST}")
+        print(f"[EMAIL ERROR] SMTP порт: {SMTP_PORT}")
+        print(f"[EMAIL ERROR] Отправитель: {EMAIL_USER}")
         import traceback
+        print(f"[EMAIL ERROR] Полный traceback:")
         traceback.print_exc()
         return False
 
