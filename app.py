@@ -53,7 +53,7 @@ def generate_verification_code():
     return ''.join(random.choices(string.digits, k=6))
 
 def send_verification_email(email, code):
-    """Send verification code via Gmail SMTP_SSL"""
+    """Send verification code via Gmail SMTP_SSL - PLAIN TEXT ONLY"""
     try:
         print(f"[EMAIL] ===== Starting send_verification_email =====")
         print(f"[EMAIL] Recipient: {email}")
@@ -64,48 +64,23 @@ def send_verification_email(email, code):
             return False
         
         print(f"[EMAIL] Creating message...")
-        # Create message
-        msg = MIMEMultipart('alternative')
+        # Create message - PLAIN TEXT ONLY, NO HTML
+        msg = MIMEMultipart()
         msg['Subject'] = 'Padik - Код подтверждения'
-        msg['From'] = EMAIL_USER  # Ensure From matches EMAIL_USER
+        msg['From'] = EMAIL_USER
         msg['To'] = email
+        msg['Reply-To'] = EMAIL_USER
         
-        # HTML email template
-        html = f"""
-        <html>
-            <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-                <div style="max-width: 500px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
-                    <h2 style="color: #1A56DB; text-align: center; margin-bottom: 20px;">Padik Messenger</h2>
-                    
-                    <p style="color: #333; font-size: 16px; margin-bottom: 20px;">
-                        Здравствуйте!
-                    </p>
-                    
-                    <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
-                        Вы запросили вход в приложение Padik. Используйте код подтверждения ниже:
-                    </p>
-                    
-                    <div style="background-color: #1A56DB; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 20px;">
-                        <p style="font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 5px;">
-                            {code}
-                        </p>
-                    </div>
-                    
-                    <p style="color: #999; font-size: 12px; text-align: center; margin-bottom: 20px;">
-                        Код действует 3 минуты
-                    </p>
-                    
-                    <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
-                    
-                    <p style="color: #999; font-size: 12px; text-align: center;">
-                        Если вы не запрашивали этот код, проигнорируйте это письмо.
-                    </p>
-                </div>
-            </body>
-        </html>
-        """
+        # PLAIN TEXT ONLY - no HTML, no formatting
+        text = f"""Ваш код для входа в Padik: {code}
+
+Код действует 3 минуты.
+
+Если вы не запрашивали этот код, проигнорируйте это письмо."""
         
-        msg.attach(MIMEText(html, 'html'))
+        msg.attach(MIMEText(text, 'plain'))
+        
+        print(f"!!! СРОЧНО: ВВОДИ ЭТОТ КОД В ПРИЛОЖЕНИИ: {code} !!!")
         
         print(f"[EMAIL] Connecting to SMTP_SSL server {SMTP_HOST}:{SMTP_PORT}...")
         # Send email using SMTP_SSL on port 465
