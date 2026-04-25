@@ -12,19 +12,30 @@ load_dotenv()
 app = Flask(__name__)
 CORS(app)
 
-# MongoDB Connection
-MONGO_URI = os.getenv("MONGO_URI", "mongodb://localhost:27017/padik_messenger")
-client = MongoClient(MONGO_URI)
-db = client.get_database()
+# ✅ ИСПРАВЛЕННОЕ ПОДКЛЮЧЕНИЕ К БД
+MONGO_URI = os.getenv("MONGO_URI")
 
+if not MONGO_URI:
+    print("[ERROR] ❌ MONGO_URI не задан в переменных окружения!")
+    print("[ERROR] Пожалуйста, установите MONGO_URI перед запуском сервера")
+    raise ValueError("MONGO_URI environment variable is not set")
+
+print(f"[STARTUP] Подключаюсь к MongoDB: {MONGO_URI[:50]}...")
+
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    # Проверяем подключение
+    client.admin.command('ping')
+    print("[STARTUP] ✅ Успешно подключился к MongoDB!")
+except Exception as e:
+    print(f"[ERROR] ❌ Не удалось подключиться к MongoDB: {str(e)}")
+    raise
+
+db = client.get_database()
 users_collection = db.users
 codes_collection = db.codes
 
-# ✅ ГЛОБАЛЬНАЯ ЧИСТКА БД ПРИ ЗАПУСКЕ
-print("[STARTUP] Очищаю базу данных...")
-users_collection.delete_many({})
-codes_collection.delete_many({})
-print("[STARTUP] База данных очищена! Готово к тестированию.")
+print("[STARTUP] Коллекции инициализированы")
 
 def normalize_email(email):
     """Нормализация email: trim и lowercase"""
@@ -315,5 +326,5 @@ def health():
     return jsonify({'status': 'ok', 'message': 'Server is running'}), 200
 
 if __name__ == '__main__':
-    print("[STARTUP] Запускаю Padik Messenger сервер...")
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    print("[STARTUP] ✅ Padik Messenger сервер готов к работе!")
+    app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
