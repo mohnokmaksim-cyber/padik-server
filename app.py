@@ -41,11 +41,7 @@ verification_codes_collection.create_index('email')
 EMAIL_USER = os.getenv('EMAIL_USER')
 EMAIL_PASS = os.getenv('EMAIL_PASS')
 SMTP_HOST = 'smtp.gmail.com'
-SMTP_PORT = 465  # Changed to 465 for SMTP_SSL
-
-print(f"[STARTUP] EMAIL_USER: {EMAIL_USER}")
-print(f"[STARTUP] EMAIL_PASS configured: {bool(EMAIL_PASS)}")
-print(f"[STARTUP] MONGODB_URI: {MONGODB_URI[:50]}...")
+SMTP_PORT = 587
 
 # Helper functions
 def generate_verification_code():
@@ -53,105 +49,66 @@ def generate_verification_code():
     return ''.join(random.choices(string.digits, k=6))
 
 def send_verification_email(email, code):
-    """Send verification code via Gmail SMTP_SSL - PLAIN TEXT ONLY"""
+    """Send verification code via Gmail SMTP"""
     try:
-        print(f"[EMAIL] ===== Starting send_verification_email =====")
-        print(f"[EMAIL] Recipient: {email}")
-        print(f"[EMAIL] Sender: {EMAIL_USER}")
-        
         if not EMAIL_USER or not EMAIL_PASS:
-            print(f"[EMAIL ERROR] Email credentials not configured. EMAIL_USER: {EMAIL_USER}, EMAIL_PASS: {bool(EMAIL_PASS)}")
+            print(f"[WARNING] Email credentials not configured. Code: {code}")
             return False
         
-        print(f"[EMAIL] Creating message...")
-        # Create message - PLAIN TEXT ONLY, NO HTML
-        msg = MIMEMultipart()
+        # Create message
+        msg = MIMEMultipart('alternative')
         msg['Subject'] = 'Padik - Код подтверждения'
         msg['From'] = EMAIL_USER
         msg['To'] = email
-        msg['Reply-To'] = EMAIL_USER
         
-        # PLAIN TEXT ONLY - no HTML, no formatting
-        text = f"""Ваш код для входа в Padik: {code}
-
-Код действует 3 минуты.
-
-Если вы не запрашивали этот код, проигнорируйте это письмо."""
+        # HTML email template
+        html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+                <div style="max-width: 500px; margin: 0 auto; background-color: white; border-radius: 8px; padding: 30px; box-shadow: 0 2px 4px rgba(0,0,0,0.1);">
+                    <h2 style="color: #1A56DB; text-align: center; margin-bottom: 20px;">Padik Messenger</h2>
+                    
+                    <p style="color: #333; font-size: 16px; margin-bottom: 20px;">
+                        Здравствуйте!
+                    </p>
+                    
+                    <p style="color: #666; font-size: 14px; margin-bottom: 20px;">
+                        Вы запросили вход в приложение Padik. Используйте код подтверждения ниже:
+                    </p>
+                    
+                    <div style="background-color: #1A56DB; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 20px;">
+                        <p style="font-size: 32px; font-weight: bold; margin: 0; letter-spacing: 5px;">
+                            {code}
+                        </p>
+                    </div>
+                    
+                    <p style="color: #999; font-size: 12px; text-align: center; margin-bottom: 20px;">
+                        Код действует 3 минуты
+                    </p>
+                    
+                    <hr style="border: none; border-top: 1px solid #eee; margin: 20px 0;">
+                    
+                    <p style="color: #999; font-size: 12px; text-align: center;">
+                        Если вы не запрашивали этот код, проигнорируйте это письмо.
+                    </p>
+                </div>
+            </body>
+        </html>
+        """
         
-        msg.attach(MIMEText(text, 'plain'))
+        msg.attach(MIMEText(html, 'html'))
         
-        print(f"!!! СРОЧНО: ВВОДИ ЭТОТ КОД В ПРИЛОЖЕНИИ: {code} !!!")
-        
-        print(f"[EMAIL] Connecting to SMTP_SSL server {SMTP_HOST}:{SMTP_PORT}...")
-        # Send email using SMTP_SSL on port 465
-        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
-            # Enable debug logging
-            server.set_debuglevel(1)
-            print(f"[EMAIL] Connected to SMTP_SSL server")
-            
-            print(f"[EMAIL] Logging in as {EMAIL_USER}...")
+        # Send email
+        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
+            server.starttls()
             server.login(EMAIL_USER, EMAIL_PASS)
-            print(f"[EMAIL] Successfully logged in as {EMAIL_USER}")
-            
-            print(f"[EMAIL] Sending message to {email}...")
             server.send_message(msg)
-            print(f"[EMAIL] Message sent successfully to {email}")
         
-        print(f"[EMAIL SUCCESS] Code sent to {email}")
-        print(f"[EMAIL] ===== Finished send_verification_email =====")
+        print(f"[EMAIL SENT] Code sent to {email}")
         return True
     
-    except smtplib.SMTPAuthenticationError as e:
-        print(f"\n[EMAIL ERROR] ===== ОШИБКА АУТЕНТИФИКАЦИИ ПОЧТЫ =====")
-        print(f"[EMAIL ERROR] Тип: SMTPAuthenticationError")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        print(f"[EMAIL ERROR] EMAIL_USER: {EMAIL_USER}")
-        print(f"[EMAIL ERROR] EMAIL_PASS установлен: {bool(EMAIL_PASS)}")
-        print(f"[EMAIL ERROR] Проверьте: пароль приложения Gmail, двухфакторную аутентификацию")
-        import traceback
-        traceback.print_exc()
-        return False
-    except smtplib.SMTPRecipientsRefused as e:
-        print(f"\n[EMAIL ERROR] ===== ОШИБКА ПОЛУЧАТЕЛЯ =====")
-        print(f"[EMAIL ERROR] Тип: SMTPRecipientsRefused")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        print(f"[EMAIL ERROR] Получатель: {email}")
-        import traceback
-        traceback.print_exc()
-        return False
-    except smtplib.SMTPSenderRefused as e:
-        print(f"\n[EMAIL ERROR] ===== ОШИБКА ОТПРАВИТЕЛЯ =====")
-        print(f"[EMAIL ERROR] Тип: SMTPSenderRefused")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        print(f"[EMAIL ERROR] Отправитель: {EMAIL_USER}")
-        import traceback
-        traceback.print_exc()
-        return False
-    except smtplib.SMTPDataError as e:
-        print(f"\n[EMAIL ERROR] ===== ОШИБКА ДАННЫХ SMTP =====")
-        print(f"[EMAIL ERROR] Тип: SMTPDataError")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
-    except smtplib.SMTPException as e:
-        print(f"\n[EMAIL ERROR] ===== ОШИБКА SMTP =====")
-        print(f"[EMAIL ERROR] Тип: SMTPException")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        import traceback
-        traceback.print_exc()
-        return False
     except Exception as e:
-        print(f"\n[EMAIL ERROR] ===== НЕИЗВЕСТНАЯ ОШИБКА ПОЧТЫ =====")
-        print(f"[EMAIL ERROR] Тип: {type(e).__name__}")
-        print(f"[EMAIL ERROR] Сообщение: {str(e)}")
-        print(f"[EMAIL ERROR] Получатель: {email}")
-        print(f"[EMAIL ERROR] SMTP хост: {SMTP_HOST}")
-        print(f"[EMAIL ERROR] SMTP порт: {SMTP_PORT}")
-        print(f"[EMAIL ERROR] Отправитель: {EMAIL_USER}")
-        import traceback
-        print(f"[EMAIL ERROR] Полный traceback:")
-        traceback.print_exc()
+        print(f"[EMAIL ERROR] Failed to send email to {email}: {str(e)}")
         return False
 
 def generate_jwt_token(user_id, email):
@@ -221,25 +178,18 @@ def send_code():
     data = request.get_json()
     email = data.get('email', '').strip().lower()
     
-    print(f"\n[DEBUG] ===== send_code called =====")
-    print(f"[DEBUG] Email: {email}")
-    
     if not email:
-        print(f"[DEBUG] Email is empty")
         return jsonify({'error': 'Email is required'}), 400
     
     # Check if email is valid (basic validation)
     if '@' not in email:
-        print(f"[DEBUG] Invalid email format")
         return jsonify({'error': 'Invalid email format'}), 400
     
     try:
         # Generate verification code
         code = generate_verification_code()
-        print(f"[DEBUG] Generated code: {code}")
         
         # Store verification code in database
-        print(f"[DEBUG] Storing code in database...")
         verification_codes_collection.update_one(
             {'email': email},
             {
@@ -251,12 +201,9 @@ def send_code():
             },
             upsert=True
         )
-        print(f"[DEBUG] Code stored in database")
         
         # Send email with code
-        print(f"[DEBUG] Calling send_verification_email...")
         email_sent = send_verification_email(email, code)
-        print(f"[DEBUG] send_verification_email returned: {email_sent}")
         
         # ✅ FIXED: Return error status if email send failed
         if not email_sent:
@@ -266,10 +213,9 @@ def send_code():
                 'code': 'EMAIL_SEND_FAILED'
             })
             response.headers.add('Access-Control-Allow-Origin', '*')
-            return response, 500
+            return response, 500  # ✅ Return 500 instead of 200
         
         # ✅ Success response
-        print(f"[DEBUG] Returning success response")
         response = jsonify({
             'success': True,
             'message': 'Verification code sent to email',
@@ -280,8 +226,6 @@ def send_code():
     
     except Exception as e:
         print(f"[ERROR] Exception in send_code: {e}")
-        import traceback
-        traceback.print_exc()
         response = jsonify({
             'error': 'An unexpected error occurred while sending verification code',
             'code': 'INTERNAL_ERROR'
