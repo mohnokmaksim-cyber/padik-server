@@ -41,7 +41,7 @@ verification_codes_collection.create_index('email')
 EMAIL_USER = os.getenv('EMAIL_USER')
 EMAIL_PASS = os.getenv('EMAIL_PASS')
 SMTP_HOST = 'smtp.gmail.com'
-SMTP_PORT = 587
+SMTP_PORT = 465  # Changed to 465 for SMTP_SSL
 
 print(f"[STARTUP] EMAIL_USER: {EMAIL_USER}")
 print(f"[STARTUP] EMAIL_PASS configured: {bool(EMAIL_PASS)}")
@@ -53,9 +53,11 @@ def generate_verification_code():
     return ''.join(random.choices(string.digits, k=6))
 
 def send_verification_email(email, code):
-    """Send verification code via Gmail SMTP"""
+    """Send verification code via Gmail SMTP_SSL"""
     try:
-        print(f"[EMAIL] Starting send_verification_email for {email}")
+        print(f"[EMAIL] ===== Starting send_verification_email =====")
+        print(f"[EMAIL] Recipient: {email}")
+        print(f"[EMAIL] Sender: {EMAIL_USER}")
         
         if not EMAIL_USER or not EMAIL_PASS:
             print(f"[EMAIL ERROR] Email credentials not configured. EMAIL_USER: {EMAIL_USER}, EMAIL_PASS: {bool(EMAIL_PASS)}")
@@ -65,7 +67,7 @@ def send_verification_email(email, code):
         # Create message
         msg = MIMEMultipart('alternative')
         msg['Subject'] = 'Padik - Код подтверждения'
-        msg['From'] = EMAIL_USER
+        msg['From'] = EMAIL_USER  # Ensure From matches EMAIL_USER
         msg['To'] = email
         
         # HTML email template
@@ -105,22 +107,28 @@ def send_verification_email(email, code):
         
         msg.attach(MIMEText(html, 'html'))
         
-        print(f"[EMAIL] Connecting to SMTP server {SMTP_HOST}:{SMTP_PORT}...")
-        # Send email
-        with smtplib.SMTP(SMTP_HOST, SMTP_PORT) as server:
-            print(f"[EMAIL] Connected to SMTP server")
-            server.starttls()
-            print(f"[EMAIL] TLS started")
+        print(f"[EMAIL] Connecting to SMTP_SSL server {SMTP_HOST}:{SMTP_PORT}...")
+        # Send email using SMTP_SSL on port 465
+        with smtplib.SMTP_SSL(SMTP_HOST, SMTP_PORT) as server:
+            # Enable debug logging
+            server.set_debuglevel(1)
+            print(f"[EMAIL] Connected to SMTP_SSL server")
+            
+            print(f"[EMAIL] Logging in as {EMAIL_USER}...")
             server.login(EMAIL_USER, EMAIL_PASS)
-            print(f"[EMAIL] Logged in as {EMAIL_USER}")
+            print(f"[EMAIL] Successfully logged in as {EMAIL_USER}")
+            
+            print(f"[EMAIL] Sending message to {email}...")
             server.send_message(msg)
-            print(f"[EMAIL] Message sent successfully")
+            print(f"[EMAIL] Message sent successfully to {email}")
         
         print(f"[EMAIL SUCCESS] Code sent to {email}")
+        print(f"[EMAIL] ===== Finished send_verification_email =====")
         return True
     
     except smtplib.SMTPAuthenticationError as e:
         print(f"[EMAIL ERROR] Authentication failed: {str(e)}")
+        print(f"[EMAIL ERROR] Check EMAIL_USER and EMAIL_PASS in environment variables")
         return False
     except smtplib.SMTPException as e:
         print(f"[EMAIL ERROR] SMTP error: {str(e)}")
