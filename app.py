@@ -6,6 +6,9 @@ import secrets
 import string
 from datetime import datetime
 from dotenv import load_dotenv
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 load_dotenv()
 
@@ -31,6 +34,7 @@ except Exception as e:
     print(f"[ERROR] ❌ Не удалось подключиться к MongoDB: {str(e)}")
     raise
 
+# ✅ Явно указываем имя базы данных
 db = client.get_database("padik_db")
 users_collection = db.users
 codes_collection = db.codes
@@ -48,6 +52,57 @@ def generate_code():
 def generate_token():
     """Генерируем уникальный токен"""
     return secrets.token_urlsafe(32)
+
+def send_email(to_email, code):
+    """Отправляем код на Gmail"""
+    try:
+        # Получаем учетные данные из переменных окружения
+        sender_email = os.getenv("GMAIL_EMAIL")
+        sender_password = os.getenv("GMAIL_PASSWORD")
+        
+        if not sender_email or not sender_password:
+            print("[EMAIL] ⚠️ GMAIL_EMAIL или GMAIL_PASSWORD не установлены")
+            return False
+        
+        # Создаем письмо
+        message = MIMEMultipart("alternative")
+        message["Subject"] = "Код подтверждения Padik Messenger"
+        message["From"] = sender_email
+        message["To"] = to_email
+        
+        # HTML версия письма
+        html = f"""
+        <html>
+            <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
+                <div style="max-width: 500px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
+                    <h2 style="color: #0a7ea4; text-align: center; margin-bottom: 20px;">Padik Messenger</h2>
+                    <p style="color: #333; font-size: 16px; margin-bottom: 20px;">Ваш код подтверждения:</p>
+                    <div style="background-color: #0a7ea4; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 20px;">
+                        <h1 style="margin: 0; font-size: 36px; letter-spacing: 5px;">{code}</h1>
+                    </div>
+                    <p style="color: #666; font-size: 14px; margin-bottom: 10px;">Этот код действителен 15 минут.</p>
+                    <p style="color: #666; font-size: 14px;">Если вы не запрашивали этот код, проигнорируйте это письмо.</p>
+                    <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
+                    <p style="color: #999; font-size: 12px; text-align: center;">© 2026 Padik Messenger. Все права защищены.</p>
+                </div>
+            </body>
+        </html>
+        """
+        
+        part = MIMEText(html, "html")
+        message.attach(part)
+        
+        # Отправляем письмо
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
+            server.login(sender_email, sender_password)
+            server.sendmail(sender_email, to_email, message.as_string())
+        
+        print(f"[EMAIL] ✅ Код отправлен на {to_email}")
+        return True
+        
+    except Exception as e:
+        print(f"[EMAIL] ❌ Ошибка отправки: {str(e)}")
+        return False
 
 # ✅ ОТПРАВКА КОДА НА ПОЧТУ
 @app.route('/send_code', methods=['POST'])
@@ -78,13 +133,23 @@ def send_code():
         
         if result.inserted_id:
             print(f"[SEND_CODE] Код сохранен в БД для {email}")
-            # В реальном приложении здесь отправляем email
-            print(f"[SEND_CODE] 📧 Код отправлен на {email}: {code}")
-            return jsonify({
-                'status': 'ok',
-                'message': f'Code sent to {email}',
-                'code': code  # В тестировании показываем код
-            }), 200
+            
+            # ✅ ОТПРАВЛЯЕМ КОД НА РЕАЛЬНЫЙ EMAIL
+            email_sent = send_email(email, code)
+            
+            if email_sent:
+                print(f"[SEND_CODE] ✅ Код успешно отправлен на {email}")
+                return jsonify({
+                    'status': 'ok',
+                    'message': f'Code sent to {email}'
+                }), 200
+            else:
+                print(f"[SEND_CODE] ⚠️ Код сохранен в БД, но не отправлен на email")
+                return jsonify({
+                    'status': 'ok',
+                    'message': f'Code saved but email sending failed',
+                    'code': code  # Показываем код если email не отправился
+                }), 200
         else:
             print(f"[SEND_CODE] ❌ Ошибка сохранения кода в БД")
             return jsonify({'error': 'Failed to save code'}), 500
