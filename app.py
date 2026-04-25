@@ -31,7 +31,7 @@ except Exception as e:
     print(f"[ERROR] ❌ Не удалось подключиться к MongoDB: {str(e)}")
     raise
 
-db = client.get_database()
+db = client.get_database("padik_db")
 users_collection = db.users
 codes_collection = db.codes
 
