@@ -20,7 +20,7 @@ from email.mime.multipart import MIMEMultipart
 app = Flask(__name__)
 
 # Конфигурация JWT
-app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'padik-secret-key-change-in-production')
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'your-secret-key-change-in-production')
 app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
 # Инициализация JWT
@@ -60,7 +60,7 @@ DB_PATH = 'padik.db'
 # ============================================================================
 
 def init_db():
-    """Инициализация SQLite базы данных"""
+    """Инициализация базы данных"""
     conn = sqlite3.connect(DB_PATH)
     cursor = conn.cursor()
     
@@ -70,8 +70,10 @@ def init_db():
             id INTEGER PRIMARY KEY AUTOINCREMENT,
             email TEXT UNIQUE NOT NULL,
             name TEXT,
-            apartment TEXT,
             phone TEXT,
+            bio TEXT,
+            avatar_url TEXT,
+            apartment TEXT,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
         )
     ''')
@@ -91,10 +93,21 @@ def init_db():
     cursor.execute('''
         CREATE TABLE IF NOT EXISTS chats (
             id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT NOT NULL,
-            description TEXT,
-            type TEXT DEFAULT 'group',
+            name TEXT,
+            is_group INTEGER DEFAULT 0,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Таблица участников чатов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
         )
     ''')
     
@@ -106,18 +119,6 @@ def init_db():
             user_id INTEGER NOT NULL,
             content TEXT NOT NULL,
             created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (chat_id) REFERENCES chats(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    ''')
-    
-    # Таблица участников чатов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chat_members (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
             FOREIGN KEY (chat_id) REFERENCES chats(id),
             FOREIGN KEY (user_id) REFERENCES users(id)
         )
@@ -186,7 +187,7 @@ def send_verification_code_email(to_email, code):
     <html>
         <body style="font-family: Arial, sans-serif; background-color: #0a0e27; color: #fff; padding: 20px;">
             <div style="max-width: 400px; margin: 0 auto; background-color: #1a1f3a; border: 1px solid #00D9FF; border-radius: 12px; padding: 30px; box-shadow: 0 0 30px rgba(0, 217, 255, 0.2);">
-                <h1 style="text-align: center; color: #00D9FF; text-shadow: 0 0 20px rgba(0, 217, 255, 0.5); margin-bottom: 20px;">P2</h1>
+                <h1 style="text-align: center; color: #00D9FF; text-shadow: 0 0 20px rgba(0, 217, 255, 0.5); margin-bottom: 20px;">P</h1>
                 <p style="text-align: center; font-size: 14px; color: #999; margin-bottom: 30px;">Padik Messenger</p>
                 
                 <h2 style="text-align: center; color: #fff; font-size: 20px; margin-bottom: 20px;">Ваш код подтверждения</h2>
@@ -310,24 +311,24 @@ def verify_code():
         if not email or not code:
             return jsonify({'error': 'Email and code are required'}), 400
         
+        # Проверяем код в БД
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Проверяем код
         cursor.execute(
             'SELECT * FROM verification_codes WHERE email = ? AND code = ? AND expires_at > ?',
             (email, code, datetime.now())
         )
-        code_record = cursor.fetchone()
+        verification = cursor.fetchone()
         
-        if not code_record:
+        if not verification:
             conn.close()
             return jsonify({'error': 'Invalid or expired code'}), 401
         
         # Удаляем использованный код
-        cursor.execute('DELETE FROM verification_codes WHERE id = ?', (code_record['id'],))
+        cursor.execute('DELETE FROM verification_codes WHERE id = ?', (verification['id'],))
         
-        # Проверяем/создаем пользователя
+        # Проверяем, существует ли пользователь
         cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
         user = cursor.fetchone()
         
@@ -340,16 +341,19 @@ def verify_code():
                 (email, email.split('@')[0])
             )
             conn.commit()
+            
+            # Получаем созданного пользователя
             cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
             user = cursor.fetchone()
-        
-        conn.close()
         
         # Генерируем JWT-токен
         token = create_access_token(identity=user['id'])
         
         action = 'registered' if is_new_user else 'authenticated'
         print(f'[VERIFY_CODE] ✅ User {email} {action}, Token: {token[:20]}...')
+        
+        conn.commit()
+        conn.close()
         
         return jsonify({
             'status': 'ok',
@@ -366,10 +370,6 @@ def verify_code():
         print(f'[ERROR] verify_code: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-# ============================================================================
-# МАРШРУТ АВТОРИЗАЦИИ (HTML страница)
-# ============================================================================
-
 @app.route('/auth', methods=['GET'])
 def auth_page():
     """
@@ -381,15 +381,16 @@ def auth_page():
     <head>
         <meta charset="UTF-8">
         <meta name="viewport" content="width=device-width, initial-scale=1.0">
-        <title>Padik Web - Авторизация</title>
+        <title>Padik Messenger - Вход</title>
         <style>
             * {
                 margin: 0;
                 padding: 0;
                 box-sizing: border-box;
             }
+            
             body {
-                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
                 background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
                 min-height: 100vh;
                 display: flex;
@@ -397,161 +398,196 @@ def auth_page():
                 justify-content: center;
                 padding: 20px;
             }
+            
             .container {
-                background: rgba(15, 20, 51, 0.8);
-                border: 1px solid #00D9FF;
-                border-radius: 12px;
-                padding: 40px;
-                max-width: 400px;
                 width: 100%;
-                box-shadow: 0 0 30px rgba(0, 217, 255, 0.2);
+                max-width: 400px;
+                background: rgba(26, 31, 58, 0.8);
+                border: 1px solid rgba(0, 217, 255, 0.3);
+                border-radius: 16px;
+                padding: 40px 30px;
+                box-shadow: 0 0 50px rgba(0, 217, 255, 0.15);
+                backdrop-filter: blur(10px);
             }
+            
             .logo {
                 text-align: center;
                 margin-bottom: 30px;
             }
-            .logo h1 {
+            
+            .logo-text {
                 font-size: 48px;
+                font-weight: bold;
                 color: #00D9FF;
                 text-shadow: 0 0 20px rgba(0, 217, 255, 0.5);
                 margin-bottom: 10px;
             }
-            .logo p {
-                color: #999;
+            
+            .logo-subtitle {
                 font-size: 14px;
+                color: #999;
             }
+            
             .form-group {
                 margin-bottom: 20px;
             }
+            
             label {
                 display: block;
-                color: #ccc;
                 font-size: 14px;
-                font-weight: 600;
+                color: #ccc;
                 margin-bottom: 8px;
+                font-weight: 500;
             }
+            
             input {
                 width: 100%;
                 padding: 12px 16px;
-                background: #1a1f3a;
-                border: 1px solid #00D9FF;
+                background: rgba(10, 14, 39, 0.5);
+                border: 1px solid rgba(0, 217, 255, 0.3);
                 border-radius: 8px;
                 color: #fff;
-                font-size: 16px;
-                outline: none;
-            }
-            input:focus {
-                box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
-            }
-            button {
-                width: 100%;
-                padding: 14px;
-                background: #00D9FF;
-                color: #0a0e27;
-                border: none;
-                border-radius: 8px;
-                font-size: 16px;
-                font-weight: 700;
-                cursor: pointer;
-                margin-top: 20px;
-                box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+                font-size: 14px;
                 transition: all 0.3s ease;
             }
+            
+            input:focus {
+                outline: none;
+                border-color: #00D9FF;
+                box-shadow: 0 0 15px rgba(0, 217, 255, 0.2);
+                background: rgba(10, 14, 39, 0.8);
+            }
+            
+            button {
+                width: 100%;
+                padding: 12px 16px;
+                background: linear-gradient(135deg, #00D9FF 0%, #0099cc 100%);
+                border: none;
+                border-radius: 8px;
+                color: #0a0e27;
+                font-size: 16px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                margin-top: 10px;
+            }
+            
             button:hover {
                 transform: translateY(-2px);
-                box-shadow: 0 0 30px rgba(0, 217, 255, 0.5);
+                box-shadow: 0 8px 20px rgba(0, 217, 255, 0.3);
             }
+            
             button:active {
                 transform: translateY(0);
             }
+            
             button:disabled {
                 opacity: 0.6;
                 cursor: not-allowed;
             }
+            
             .message {
                 text-align: center;
                 margin-top: 20px;
                 font-size: 14px;
-                color: #666;
+                padding: 12px;
+                border-radius: 8px;
             }
+            
             .success {
-                color: #00D9FF;
+                color: #22C55E;
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.3);
             }
+            
             .error {
                 color: #EF4444;
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.3);
             }
+            
             .loading {
                 display: inline-block;
                 width: 16px;
                 height: 16px;
-                border: 2px solid #0a0e27;
-                border-top: 2px solid #00D9FF;
+                border: 2px solid rgba(0, 217, 255, 0.3);
+                border-top-color: #00D9FF;
                 border-radius: 50%;
-                animation: spin 0.6s linear infinite;
+                animation: spin 0.8s linear infinite;
+                margin-right: 8px;
             }
+            
             @keyframes spin {
-                0% { transform: rotate(0deg); }
-                100% { transform: rotate(360deg); }
+                to { transform: rotate(360deg); }
             }
+            
             .step-indicator {
-                text-align: center;
-                font-size: 12px;
-                color: #666;
+                display: flex;
+                gap: 8px;
                 margin-bottom: 20px;
+                justify-content: center;
+            }
+            
+            .step {
+                width: 8px;
+                height: 8px;
+                border-radius: 50%;
+                background: rgba(0, 217, 255, 0.2);
+                transition: all 0.3s ease;
+            }
+            
+            .step.active {
+                background: #00D9FF;
+                box-shadow: 0 0 10px rgba(0, 217, 255, 0.5);
             }
         </style>
     </head>
     <body>
         <div class="container">
             <div class="logo">
-                <h1>P2</h1>
-                <p>Padik Messenger</p>
+                <div class="logo-text">P</div>
+                <div class="logo-subtitle">Padik Messenger</div>
             </div>
             
-            <!-- Шаг 1: Ввод email -->
+            <div class="step-indicator">
+                <div class="step active" id="step1"></div>
+                <div class="step" id="step2"></div>
+            </div>
+            
             <div id="emailStep">
-                <div class="step-indicator">Шаг 1 из 3</div>
-                <form onsubmit="handleCheckEmail(event)">
-                    <div class="form-group">
-                        <label for="email">Email</label>
-                        <input type="email" id="email" placeholder="example@mail.com" required>
-                    </div>
-                    <button type="submit" id="checkBtn">Продолжить</button>
-                </form>
+                <div class="form-group">
+                    <label for="email">Email</label>
+                    <input type="email" id="email" placeholder="your@email.com">
+                </div>
+                <button onclick="handleCheckEmail(event)">Продолжить</button>
             </div>
             
-            <!-- Шаг 2: Ввод кода -->
             <div id="codeStep" style="display: none;">
-                <div class="step-indicator">Шаг 2 из 3</div>
-                <form onsubmit="handleVerifyCode(event)">
-                    <div class="form-group">
-                        <label for="code">Код подтверждения</label>
-                        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">Код отправлен на <strong id="emailDisplay"></strong></p>
-                        <input type="text" id="code" placeholder="000000" maxlength="6" required>
-                    </div>
-                    <button type="submit" id="verifyBtn">Войти</button>
-                    <button type="button" onclick="backToEmail()" style="background: transparent; color: #00D9FF; border: 1px solid #00D9FF; margin-top: 10px;">← Назад</button>
-                </form>
+                <div class="form-group">
+                    <label for="code">Код подтверждения</label>
+                    <input type="text" id="code" placeholder="000000" maxlength="6">
+                </div>
+                <button onclick="handleVerifyCode(event)">Подтвердить</button>
+                <button onclick="backToEmail()" style="background: rgba(0, 217, 255, 0.1); color: #00D9FF; margin-top: 10px;">Назад</button>
             </div>
             
-            <div id="message" class="message"></div>
+            <div id="message"></div>
         </div>
         
         <script>
-            let userEmail = '';
+            let currentEmail = '';
             let isNewUser = false;
             
             async function handleCheckEmail(event) {
                 event.preventDefault();
-                const email = document.getElementById('email').value;
-                userEmail = email;
+                const email = document.getElementById('email').value.trim();
                 
-                const checkBtn = document.getElementById('checkBtn');
-                checkBtn.disabled = true;
-                checkBtn.innerHTML = '<span class="loading"></span>';
+                if (!email) {
+                    showMessage('Введите email', 'error');
+                    return;
+                }
                 
                 try {
-                    // Проверяем, существует ли email
                     const checkResponse = await fetch('/check_email', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
@@ -561,14 +597,12 @@ def auth_page():
                     const checkData = await checkResponse.json();
                     
                     if (!checkResponse.ok) {
-                        showMessage('Ошибка проверки email', 'error');
-                        checkBtn.disabled = false;
-                        checkBtn.innerHTML = 'Продолжить';
+                        showMessage(checkData.error || 'Ошибка проверки email', 'error');
                         return;
                     }
                     
                     isNewUser = !checkData.exists;
-                    const action = isNewUser ? 'регистрация' : 'авторизация';
+                    const action = isNewUser ? 'регистрацию' : 'вход';
                     
                     // Отправляем код
                     const codeResponse = await fetch('/send_code', {
@@ -580,80 +614,95 @@ def auth_page():
                     const codeData = await codeResponse.json();
                     
                     if (codeResponse.ok) {
-                        document.getElementById('emailStep').style.display = 'none';
-                        document.getElementById('codeStep').style.display = 'block';
-                        document.getElementById('emailDisplay').textContent = email;
+                        currentEmail = email;
                         showMessage(`✅ Код отправлен на почту (${action})`, 'success');
+                        
+                        // Переходим на шаг ввода кода
+                        setTimeout(() => {
+                            document.getElementById('emailStep').style.display = 'none';
+                            document.getElementById('codeStep').style.display = 'block';
+                            document.getElementById('step1').classList.remove('active');
+                            document.getElementById('step2').classList.add('active');
+                            document.getElementById('code').focus();
+                        }, 1000);
                     } else {
                         showMessage(codeData.error || 'Ошибка отправки кода', 'error');
-                        checkBtn.disabled = false;
-                        checkBtn.innerHTML = 'Продолжить';
                     }
                 } catch (error) {
                     showMessage('Ошибка подключения: ' + error.message, 'error');
-                    checkBtn.disabled = false;
-                    checkBtn.innerHTML = 'Продолжить';
                 }
             }
             
             async function handleVerifyCode(event) {
                 event.preventDefault();
-                const code = document.getElementById('code').value;
+                const code = document.getElementById('code').value.trim();
                 
-                const verifyBtn = document.getElementById('verifyBtn');
-                verifyBtn.disabled = true;
-                verifyBtn.innerHTML = '<span class="loading"></span>';
+                if (!code || code.length !== 6) {
+                    showMessage('Введите 6-значный код', 'error');
+                    return;
+                }
                 
                 try {
                     const response = await fetch('/verify_code', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
-                        body: JSON.stringify({ email: userEmail, code })
+                        body: JSON.stringify({ email: currentEmail, code })
                     });
                     
                     const data = await response.json();
                     
                     if (response.ok && data.token) {
-                        const action = data.is_new_user ? 'Добро пожаловать!' : '✅ Вход выполнен!';
+                        const action = isNewUser ? '✅ Добро пожаловать!' : '✅ Вы вошли!';
                         showMessage(action, 'success');
                         
-                        // Отправляем токен в приложение через postMessage
+                        // Отправляем токен в мобильное приложение
                         if (window.ReactNativeWebView) {
                             window.ReactNativeWebView.postMessage(JSON.stringify({
-                                type: 'AUTH_SUCCESS',
+                                type: 'AUTH_TOKEN',
                                 token: data.token,
                                 user: data.user
                             }));
-                        } else {
-                            // Для тестирования в браузере
-                            localStorage.setItem('auth_token', data.token);
-                            console.log('Token saved:', data.token);
-                            alert('Token: ' + data.token);
                         }
+                        
+                        // Сохраняем токен в localStorage для веб
+                        localStorage.setItem('auth_token', data.token);
+                        
+                        // Перенаправляем на главную страницу
+                        setTimeout(() => {
+                            window.location.href = '/';
+                        }, 1500);
                     } else {
                         showMessage(data.error || 'Неверный код', 'error');
-                        verifyBtn.disabled = false;
-                        verifyBtn.innerHTML = 'Войти';
                     }
                 } catch (error) {
                     showMessage('Ошибка подключения: ' + error.message, 'error');
-                    verifyBtn.disabled = false;
-                    verifyBtn.innerHTML = 'Войти';
                 }
             }
             
             function backToEmail() {
+                document.getElementById('code').value = '';
                 document.getElementById('emailStep').style.display = 'block';
                 document.getElementById('codeStep').style.display = 'none';
-                document.getElementById('message').textContent = '';
-                document.getElementById('code').value = '';
+                document.getElementById('step1').classList.add('active');
+                document.getElementById('step2').classList.remove('active');
+                document.getElementById('email').focus();
             }
             
             function showMessage(text, type) {
-                const msg = document.getElementById('message');
-                msg.textContent = text;
-                msg.className = 'message ' + type;
+                const messageDiv = document.getElementById('message');
+                messageDiv.textContent = text;
+                messageDiv.className = 'message ' + type;
+                messageDiv.style.display = 'block';
             }
+            
+            // Обработка Enter в полях
+            document.getElementById('email').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleCheckEmail(e);
+            });
+            
+            document.getElementById('code').addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') handleVerifyCode(e);
+            });
         </script>
     </body>
     </html>
@@ -661,23 +710,23 @@ def auth_page():
     return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
 
 # ============================================================================
-# МАРШРУТЫ ЧАТОВ
+# МАРШРУТЫ ЧАТОВ И СООБЩЕНИЙ
 # ============================================================================
 
 @app.route('/api/chats', methods=['GET'])
 @jwt_required()
 def get_chats():
     """
-    Получение списка чатов для пользователя
+    Получение списка чатов текущего пользователя
     GET /api/chats
     Header: Authorization: Bearer <token>
     """
     try:
         user_id = get_jwt_identity()
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Получаем чаты, в которых участвует пользователь
         cursor.execute('''
             SELECT c.* FROM chats c
             JOIN chat_members cm ON c.id = cm.chat_id
@@ -686,40 +735,6 @@ def get_chats():
         ''', (user_id,))
         
         chats = [dict(row) for row in cursor.fetchall()]
-        
-        # Если нет чатов, создаем тестовые
-        if not chats:
-            test_chats = [
-                ('Общий чат', 'Общее обсуждение'),
-                ('Курилка', 'Неформальное общение'),
-                ('Админка', 'Для администраторов')
-            ]
-            
-            for name, desc in test_chats:
-                cursor.execute(
-                    'INSERT INTO chats (name, description) VALUES (?, ?)',
-                    (name, desc)
-                )
-                conn.commit()
-                chat_id = cursor.lastrowid
-                
-                # Добавляем пользователя в чат
-                cursor.execute(
-                    'INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)',
-                    (chat_id, user_id)
-                )
-                conn.commit()
-            
-            # Получаем созданные чаты
-            cursor.execute('''
-                SELECT c.* FROM chats c
-                JOIN chat_members cm ON c.id = cm.chat_id
-                WHERE cm.user_id = ?
-                ORDER BY c.created_at DESC
-            ''', (user_id,))
-            
-            chats = [dict(row) for row in cursor.fetchall()]
-        
         conn.close()
         
         return jsonify({
@@ -730,10 +745,6 @@ def get_chats():
     except Exception as e:
         print(f'[ERROR] get_chats: {str(e)}')
         return jsonify({'error': str(e)}), 500
-
-# ============================================================================
-# МАРШРУТЫ СООБЩЕНИЙ
-# ============================================================================
 
 @app.route('/api/messages', methods=['GET'])
 @jwt_required()
@@ -753,32 +764,14 @@ def get_messages():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Получаем сообщения
         cursor.execute('''
-            SELECT m.id, m.chat_id, m.user_id, m.content, m.created_at,
-                   u.email, u.name
-            FROM messages m
+            SELECT m.*, u.name, u.avatar_url FROM messages m
             JOIN users u ON m.user_id = u.id
             WHERE m.chat_id = ?
             ORDER BY m.created_at ASC
-            LIMIT 100
         ''', (chat_id,))
         
-        messages = []
-        for row in cursor.fetchall():
-            messages.append({
-                'id': row['id'],
-                'chat_id': row['chat_id'],
-                'user_id': row['user_id'],
-                'content': row['content'],
-                'created_at': row['created_at'],
-                'user': {
-                    'id': row['user_id'],
-                    'email': row['email'],
-                    'name': row['name']
-                }
-            })
-        
+        messages = [dict(row) for row in cursor.fetchall()]
         conn.close()
         
         return jsonify({
@@ -811,44 +804,19 @@ def send_message():
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Сохраняем сообщение
         cursor.execute(
             'INSERT INTO messages (chat_id, user_id, content) VALUES (?, ?, ?)',
             (chat_id, user_id, content)
         )
         conn.commit()
-        message_id = cursor.lastrowid
         
-        # Получаем сохраненное сообщение
-        cursor.execute('''
-            SELECT m.id, m.chat_id, m.user_id, m.content, m.created_at,
-                   u.email, u.name
-            FROM messages m
-            JOIN users u ON m.user_id = u.id
-            WHERE m.id = ?
-        ''', (message_id,))
-        
-        row = cursor.fetchone()
+        cursor.execute('SELECT last_insert_rowid() as id')
+        message_id = cursor.fetchone()['id']
         conn.close()
-        
-        message = {
-            'id': row['id'],
-            'chat_id': row['chat_id'],
-            'user_id': row['user_id'],
-            'content': row['content'],
-            'created_at': row['created_at'],
-            'user': {
-                'id': row['user_id'],
-                'email': row['email'],
-                'name': row['name']
-            }
-        }
-        
-        print(f'[MESSAGE] User {user_id} sent message to chat {chat_id}: {content}')
         
         return jsonify({
             'status': 'ok',
-            'message': message
+            'message_id': message_id
         }), 201
     
     except Exception as e:
@@ -863,15 +831,15 @@ def send_message():
 @jwt_required()
 def get_profile():
     """
-    Получение профиля пользователя
+    Получение профиля текущего пользователя
     GET /api/profile
     Header: Authorization: Bearer <token>
     """
     try:
         user_id = get_jwt_identity()
+        
         conn = get_db_connection()
         cursor = conn.cursor()
-        
         cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
         user = cursor.fetchone()
         conn.close()
@@ -894,39 +862,33 @@ def update_profile():
     """
     Обновление профиля пользователя
     PUT /api/profile
-    Body: {"name": "John", "apartment": "101", "phone": "+1234567890"}
+    Body: {"name": "John", "phone": "+1234567890", "bio": "Hello", "avatar_url": "https://..."}
     Header: Authorization: Bearer <token>
     """
     try:
         user_id = get_jwt_identity()
         data = request.get_json()
         
+        name = data.get('name', '').strip()
+        phone = data.get('phone', '').strip()
+        bio = data.get('bio', '').strip()
+        avatar_url = data.get('avatar_url', '').strip()
+        apartment = data.get('apartment', '').strip()
+        
         conn = get_db_connection()
         cursor = conn.cursor()
         
-        # Обновляем профиль
         cursor.execute('''
-            UPDATE users
-            SET name = ?, apartment = ?, phone = ?
+            UPDATE users SET name = ?, phone = ?, bio = ?, avatar_url = ?, apartment = ?
             WHERE id = ?
-        ''', (
-            data.get('name'),
-            data.get('apartment'),
-            data.get('phone'),
-            user_id
-        ))
+        ''', (name, phone, bio, avatar_url, apartment, user_id))
+        
         conn.commit()
-        
-        # Получаем обновленный профиль
-        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
         conn.close()
-        
-        print(f'[PROFILE] User {user_id} updated profile')
         
         return jsonify({
             'status': 'ok',
-            'user': dict(user)
+            'message': 'Profile updated'
         }), 200
     
     except Exception as e:
@@ -934,70 +896,61 @@ def update_profile():
         return jsonify({'error': str(e)}), 500
 
 # ============================================================================
-# HEALTH CHECK
+# МАРШРУТЫ ЗДОРОВЬЯ И ИНФОРМАЦИИ
 # ============================================================================
 
 @app.route('/health', methods=['GET'])
 def health():
-    """Health check маршрут"""
-    return jsonify({'status': 'ok', 'message': 'Padik Backend is running'}), 200
-
-# ============================================================================
-# ГЛАВНАЯ СТРАНИЦА
-# ============================================================================
+    """Health check endpoint"""
+    return jsonify({
+        'status': 'ok',
+        'service': 'Padik Messenger Backend',
+        'version': '2.0'
+    }), 200
 
 @app.route('/', methods=['GET'])
 def index():
-    """Главная страница с информацией об API"""
+    """API информация"""
     return jsonify({
         'name': 'Padik Messenger Backend',
-        'version': '2.0.0',
-        'features': ['Email verification', 'JWT auth', 'Chat system', 'User profiles'],
+        'version': '2.0',
+        'description': 'Flask backend для мессенджера Padik',
         'endpoints': {
-            'auth': {
-                'POST /check_email': 'Проверка существования email',
-                'POST /send_code': 'Отправка кода подтверждения',
-                'POST /verify_code': 'Проверка кода и получение токена',
-                'GET /auth': 'HTML страница авторизации'
-            },
-            'chats': {
-                'GET /api/chats': 'Получение списка чатов (требует токен)'
-            },
-            'messages': {
-                'GET /api/messages': 'Получение сообщений (требует токен)',
-                'POST /api/messages': 'Отправка сообщения (требует токен)'
-            },
-            'profile': {
-                'GET /api/profile': 'Получение профиля (требует токен)',
-                'PUT /api/profile': 'Обновление профиля (требует токен)'
-            }
+            'auth': [
+                'POST /check_email - Проверка существования email',
+                'POST /send_code - Отправка кода подтверждения',
+                'POST /verify_code - Проверка кода и получение токена',
+                'GET /auth - HTML страница авторизации'
+            ],
+            'chats': [
+                'GET /api/chats - Получение списка чатов (требует токен)',
+                'GET /api/messages - Получение сообщений (требует токен)',
+                'POST /api/messages - Отправка сообщения (требует токен)'
+            ],
+            'profile': [
+                'GET /api/profile - Получение профиля (требует токен)',
+                'PUT /api/profile - Обновление профиля (требует токен)'
+            ],
+            'health': [
+                'GET /health - Health check',
+                'GET / - Информация об API'
+            ]
         }
     }), 200
-
-# ============================================================================
-# ОБРАБОТКА ОШИБОК
-# ============================================================================
-
-@app.errorhandler(404)
-def not_found(error):
-    return jsonify({'error': 'Not found'}), 404
-
-@app.errorhandler(500)
-def internal_error(error):
-    return jsonify({'error': 'Internal server error'}), 500
 
 # ============================================================================
 # ЗАПУСК ПРИЛОЖЕНИЯ
 # ============================================================================
 
 if __name__ == '__main__':
-    print('[STARTUP] Padik Backend v2.0 starting...')
+    print('[STARTUP] Padik Backend starting...')
     print('[STARTUP] Database: ' + DB_PATH)
     print('[STARTUP] CORS enabled for all origins')
     print('[STARTUP] JWT enabled')
-    print('[STARTUP] SMTP configured:')
-    print(f'  - Server: {SMTP_SERVER}:{SMTP_PORT}')
-    print(f'  - Email: {SMTP_EMAIL}')
-    print(f'  - TLS: {SMTP_USE_TLS}')
-    print('[STARTUP] Ready to send verification codes!')
-    app.run(debug=True, host='0.0.0.0', port=5000)
+    
+    # Запускаем приложение
+    app.run(
+        host='0.0.0.0',
+        port=int(os.getenv('PORT', 5000)),
+        debug=os.getenv('FLASK_ENV', 'development') == 'development'
+    )
