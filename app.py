@@ -1,6 +1,7 @@
 """
-Padik Messenger Backend - Flask приложение
-Поддерживает авторизацию через коды подтверждения, чаты и сообщения
+Padik Messenger Backend - Flask приложение v2
+Авторизация/Регистрация через email и коды подтверждения
+Отправка кодов на реальную почту через SMTP
 """
 
 from flask import Flask, request, jsonify
@@ -11,6 +12,9 @@ import secrets
 import string
 from datetime import datetime, timedelta
 import os
+import smtplib
+from email.mime.text import MIMEText
+from email.mime.multipart import MIMEMultipart
 
 # Инициализация Flask приложения
 app = Flask(__name__)
@@ -24,6 +28,29 @@ jwt = JWTManager(app)
 
 # Включаем CORS для всех маршрутов
 CORS(app, resources={r"/*": {"origins": "*"}})
+
+# ============================================================================
+# КОНФИГУРАЦИЯ SMTP
+# ============================================================================
+
+# Используйте переменные окружения для безопасности!
+# Пример для Gmail:
+# SMTP_SERVER = "smtp.gmail.com"
+# SMTP_PORT = 587
+# SMTP_EMAIL = "your-email@gmail.com"
+# SMTP_PASSWORD = "your-app-password"  # Используйте App Password, не основной пароль!
+
+# Пример для Yandex Mail:
+# SMTP_SERVER = "smtp.yandex.ru"
+# SMTP_PORT = 465
+# SMTP_EMAIL = "your-email@yandex.ru"
+# SMTP_PASSWORD = "your-password"
+
+SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+SMTP_EMAIL = os.getenv('SMTP_EMAIL', 'your-email@gmail.com')
+SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', 'your-app-password')
+SMTP_USE_TLS = os.getenv('SMTP_USE_TLS', 'True') == 'True'
 
 # Путь к базе данных
 DB_PATH = 'padik.db'
@@ -107,7 +134,7 @@ init_db()
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
 # ============================================================================
 
-def generate_code(length=4):
+def generate_code(length=6):
     """Генерация случайного кода подтверждения"""
     return ''.join(secrets.choice(string.digits) for _ in range(length))
 
@@ -117,9 +144,106 @@ def get_db_connection():
     conn.row_factory = sqlite3.Row
     return conn
 
+def send_email(to_email, subject, html_content):
+    """
+    Отправка email через SMTP
+    """
+    try:
+        # Создаем сообщение
+        message = MIMEMultipart('alternative')
+        message['Subject'] = subject
+        message['From'] = SMTP_EMAIL
+        message['To'] = to_email
+        
+        # Добавляем HTML контент
+        part = MIMEText(html_content, 'html')
+        message.attach(part)
+        
+        # Подключаемся к SMTP серверу
+        if SMTP_USE_TLS:
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+            server.starttls()
+        else:
+            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+        
+        # Авторизуемся
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        
+        # Отправляем письмо
+        server.sendmail(SMTP_EMAIL, to_email, message.as_string())
+        server.quit()
+        
+        print(f'[EMAIL] ✅ Письмо отправлено на {to_email}')
+        return True
+    
+    except Exception as e:
+        print(f'[EMAIL] ❌ Ошибка отправки: {str(e)}')
+        return False
+
+def send_verification_code_email(to_email, code):
+    """Отправка кода подтверждения на email"""
+    html_content = f'''
+    <html>
+        <body style="font-family: Arial, sans-serif; background-color: #0a0e27; color: #fff; padding: 20px;">
+            <div style="max-width: 400px; margin: 0 auto; background-color: #1a1f3a; border: 1px solid #00D9FF; border-radius: 12px; padding: 30px; box-shadow: 0 0 30px rgba(0, 217, 255, 0.2);">
+                <h1 style="text-align: center; color: #00D9FF; text-shadow: 0 0 20px rgba(0, 217, 255, 0.5); margin-bottom: 20px;">P2</h1>
+                <p style="text-align: center; font-size: 14px; color: #999; margin-bottom: 30px;">Padik Messenger</p>
+                
+                <h2 style="text-align: center; color: #fff; font-size: 20px; margin-bottom: 20px;">Ваш код подтверждения</h2>
+                
+                <div style="background-color: #0a0e27; border: 2px solid #00D9FF; border-radius: 8px; padding: 20px; text-align: center; margin-bottom: 30px;">
+                    <p style="font-size: 32px; font-weight: bold; color: #00D9FF; margin: 0; letter-spacing: 10px;">{code}</p>
+                </div>
+                
+                <p style="text-align: center; font-size: 14px; color: #ccc; margin-bottom: 10px;">Код действует 10 минут</p>
+                <p style="text-align: center; font-size: 12px; color: #666;">Если вы не запрашивали этот код, проигнорируйте это письмо</p>
+                
+                <hr style="border: none; border-top: 1px solid #333; margin: 30px 0;">
+                
+                <p style="text-align: center; font-size: 11px; color: #555;">© 2026 Padik Messenger. Все права защищены.</p>
+            </div>
+        </body>
+    </html>
+    '''
+    
+    return send_email(to_email, 'Код подтверждения Padik Messenger', html_content)
+
 # ============================================================================
 # МАРШРУТЫ АВТОРИЗАЦИИ
 # ============================================================================
+
+@app.route('/check_email', methods=['POST'])
+def check_email():
+    """
+    Проверка, существует ли email в системе
+    POST /check_email
+    Body: {"email": "user@example.com"}
+    """
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        
+        if not email:
+            return jsonify({'error': 'Email is required'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        cursor.execute('SELECT id FROM users WHERE email = ?', (email,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        exists = user is not None
+        
+        return jsonify({
+            'status': 'ok',
+            'email': email,
+            'exists': exists,
+            'action': 'login' if exists else 'register'
+        }), 200
+    
+    except Exception as e:
+        print(f'[ERROR] check_email: {str(e)}')
+        return jsonify({'error': str(e)}), 500
 
 @app.route('/send_code', methods=['POST'])
 def send_code():
@@ -136,7 +260,7 @@ def send_code():
             return jsonify({'error': 'Email is required'}), 400
         
         # Генерируем код
-        code = generate_code(4)
+        code = generate_code(6)
         
         # Сохраняем код в БД
         conn = get_db_connection()
@@ -154,13 +278,17 @@ def send_code():
         conn.commit()
         conn.close()
         
-        # Выводим код в консоль (вместо отправки по SMTP)
-        print(f'[SEND_CODE] Email: {email}, Code: {code}')
+        # Отправляем код на почту
+        email_sent = send_verification_code_email(email, code)
+        
+        if not email_sent:
+            # Если не удалось отправить, выводим в консоль для тестирования
+            print(f'[SEND_CODE] Email: {email}, Code: {code} (SMTP ERROR - CHECK CONSOLE)')
         
         return jsonify({
             'status': 'ok',
             'message': f'Code sent to {email}',
-            'debug_code': code  # Убрать в production!
+            'email_sent': email_sent
         }), 200
     
     except Exception as e:
@@ -172,7 +300,7 @@ def verify_code():
     """
     Проверка кода подтверждения и выдача JWT-токена
     POST /verify_code
-    Body: {"email": "user@example.com", "code": "1234"}
+    Body: {"email": "user@example.com", "code": "123456"}
     """
     try:
         data = request.get_json()
@@ -203,8 +331,10 @@ def verify_code():
         cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
         user = cursor.fetchone()
         
+        is_new_user = False
         if not user:
             # Создаем нового пользователя
+            is_new_user = True
             cursor.execute(
                 'INSERT INTO users (email, name) VALUES (?, ?)',
                 (email, email.split('@')[0])
@@ -218,11 +348,13 @@ def verify_code():
         # Генерируем JWT-токен
         token = create_access_token(identity=user['id'])
         
-        print(f'[VERIFY_CODE] ✅ User {email} authenticated, Token: {token[:20]}...')
+        action = 'registered' if is_new_user else 'authenticated'
+        print(f'[VERIFY_CODE] ✅ User {email} {action}, Token: {token[:20]}...')
         
         return jsonify({
             'status': 'ok',
             'token': token,
+            'is_new_user': is_new_user,
             'user': {
                 'id': user['id'],
                 'email': user['email'],
@@ -241,7 +373,7 @@ def verify_code():
 @app.route('/auth', methods=['GET'])
 def auth_page():
     """
-    HTML страница авторизации для WebView
+    HTML страница авторизации/регистрации для WebView
     """
     html = '''
     <!DOCTYPE html>
@@ -332,6 +464,10 @@ def auth_page():
             button:active {
                 transform: translateY(0);
             }
+            button:disabled {
+                opacity: 0.6;
+                cursor: not-allowed;
+            }
             .message {
                 text-align: center;
                 margin-top: 20px;
@@ -344,6 +480,25 @@ def auth_page():
             .error {
                 color: #EF4444;
             }
+            .loading {
+                display: inline-block;
+                width: 16px;
+                height: 16px;
+                border: 2px solid #0a0e27;
+                border-top: 2px solid #00D9FF;
+                border-radius: 50%;
+                animation: spin 0.6s linear infinite;
+            }
+            @keyframes spin {
+                0% { transform: rotate(0deg); }
+                100% { transform: rotate(360deg); }
+            }
+            .step-indicator {
+                text-align: center;
+                font-size: 12px;
+                color: #666;
+                margin-bottom: 20px;
+            }
         </style>
     </head>
     <body>
@@ -353,23 +508,28 @@ def auth_page():
                 <p>Padik Messenger</p>
             </div>
             
+            <!-- Шаг 1: Ввод email -->
             <div id="emailStep">
-                <form onsubmit="handleSendCode(event)">
+                <div class="step-indicator">Шаг 1 из 3</div>
+                <form onsubmit="handleCheckEmail(event)">
                     <div class="form-group">
                         <label for="email">Email</label>
                         <input type="email" id="email" placeholder="example@mail.com" required>
                     </div>
-                    <button type="submit">Получить код</button>
+                    <button type="submit" id="checkBtn">Продолжить</button>
                 </form>
             </div>
             
+            <!-- Шаг 2: Ввод кода -->
             <div id="codeStep" style="display: none;">
+                <div class="step-indicator">Шаг 2 из 3</div>
                 <form onsubmit="handleVerifyCode(event)">
                     <div class="form-group">
                         <label for="code">Код подтверждения</label>
-                        <input type="text" id="code" placeholder="0000" maxlength="4" required>
+                        <p style="font-size: 12px; color: #666; margin-bottom: 8px;">Код отправлен на <strong id="emailDisplay"></strong></p>
+                        <input type="text" id="code" placeholder="000000" maxlength="6" required>
                     </div>
-                    <button type="submit">Войти</button>
+                    <button type="submit" id="verifyBtn">Войти</button>
                     <button type="button" onclick="backToEmail()" style="background: transparent; color: #00D9FF; border: 1px solid #00D9FF; margin-top: 10px;">← Назад</button>
                 </form>
             </div>
@@ -379,36 +539,70 @@ def auth_page():
         
         <script>
             let userEmail = '';
+            let isNewUser = false;
             
-            async function handleSendCode(event) {
+            async function handleCheckEmail(event) {
                 event.preventDefault();
                 const email = document.getElementById('email').value;
                 userEmail = email;
                 
+                const checkBtn = document.getElementById('checkBtn');
+                checkBtn.disabled = true;
+                checkBtn.innerHTML = '<span class="loading"></span>';
+                
                 try {
-                    const response = await fetch('/send_code', {
+                    // Проверяем, существует ли email
+                    const checkResponse = await fetch('/check_email', {
                         method: 'POST',
                         headers: { 'Content-Type': 'application/json' },
                         body: JSON.stringify({ email })
                     });
                     
-                    const data = await response.json();
+                    const checkData = await checkResponse.json();
                     
-                    if (response.ok) {
+                    if (!checkResponse.ok) {
+                        showMessage('Ошибка проверки email', 'error');
+                        checkBtn.disabled = false;
+                        checkBtn.innerHTML = 'Продолжить';
+                        return;
+                    }
+                    
+                    isNewUser = !checkData.exists;
+                    const action = isNewUser ? 'регистрация' : 'авторизация';
+                    
+                    // Отправляем код
+                    const codeResponse = await fetch('/send_code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                    });
+                    
+                    const codeData = await codeResponse.json();
+                    
+                    if (codeResponse.ok) {
                         document.getElementById('emailStep').style.display = 'none';
                         document.getElementById('codeStep').style.display = 'block';
-                        showMessage('Код отправлен на вашу почту', 'success');
+                        document.getElementById('emailDisplay').textContent = email;
+                        showMessage(`✅ Код отправлен на почту (${action})`, 'success');
                     } else {
-                        showMessage(data.error || 'Ошибка', 'error');
+                        showMessage(codeData.error || 'Ошибка отправки кода', 'error');
+                        checkBtn.disabled = false;
+                        checkBtn.innerHTML = 'Продолжить';
                     }
                 } catch (error) {
                     showMessage('Ошибка подключения: ' + error.message, 'error');
+                    checkBtn.disabled = false;
+                    checkBtn.innerHTML = 'Продолжить';
                 }
             }
             
             async function handleVerifyCode(event) {
                 event.preventDefault();
                 const code = document.getElementById('code').value;
+                
+                const verifyBtn = document.getElementById('verifyBtn');
+                verifyBtn.disabled = true;
+                verifyBtn.innerHTML = '<span class="loading"></span>';
                 
                 try {
                     const response = await fetch('/verify_code', {
@@ -420,24 +614,31 @@ def auth_page():
                     const data = await response.json();
                     
                     if (response.ok && data.token) {
-                        showMessage('✅ Вход выполнен!', 'success');
+                        const action = data.is_new_user ? 'Добро пожаловать!' : '✅ Вход выполнен!';
+                        showMessage(action, 'success');
                         
                         // Отправляем токен в приложение через postMessage
                         if (window.ReactNativeWebView) {
                             window.ReactNativeWebView.postMessage(JSON.stringify({
                                 type: 'AUTH_SUCCESS',
-                                token: data.token
+                                token: data.token,
+                                user: data.user
                             }));
                         } else {
                             // Для тестирования в браузере
                             localStorage.setItem('auth_token', data.token);
                             console.log('Token saved:', data.token);
+                            alert('Token: ' + data.token);
                         }
                     } else {
                         showMessage(data.error || 'Неверный код', 'error');
+                        verifyBtn.disabled = false;
+                        verifyBtn.innerHTML = 'Войти';
                     }
                 } catch (error) {
                     showMessage('Ошибка подключения: ' + error.message, 'error');
+                    verifyBtn.disabled = false;
+                    verifyBtn.innerHTML = 'Войти';
                 }
             }
             
@@ -445,6 +646,7 @@ def auth_page():
                 document.getElementById('emailStep').style.display = 'block';
                 document.getElementById('codeStep').style.display = 'none';
                 document.getElementById('message').textContent = '';
+                document.getElementById('code').value = '';
             }
             
             function showMessage(text, type) {
@@ -749,9 +951,11 @@ def index():
     """Главная страница с информацией об API"""
     return jsonify({
         'name': 'Padik Messenger Backend',
-        'version': '1.0.0',
+        'version': '2.0.0',
+        'features': ['Email verification', 'JWT auth', 'Chat system', 'User profiles'],
         'endpoints': {
             'auth': {
+                'POST /check_email': 'Проверка существования email',
                 'POST /send_code': 'Отправка кода подтверждения',
                 'POST /verify_code': 'Проверка кода и получение токена',
                 'GET /auth': 'HTML страница авторизации'
@@ -787,8 +991,13 @@ def internal_error(error):
 # ============================================================================
 
 if __name__ == '__main__':
-    print('[STARTUP] Padik Backend starting...')
+    print('[STARTUP] Padik Backend v2.0 starting...')
     print('[STARTUP] Database: ' + DB_PATH)
     print('[STARTUP] CORS enabled for all origins')
     print('[STARTUP] JWT enabled')
+    print('[STARTUP] SMTP configured:')
+    print(f'  - Server: {SMTP_SERVER}:{SMTP_PORT}')
+    print(f'  - Email: {SMTP_EMAIL}')
+    print(f'  - TLS: {SMTP_USE_TLS}')
+    print('[STARTUP] Ready to send verification codes!')
     app.run(debug=True, host='0.0.0.0', port=5000)
