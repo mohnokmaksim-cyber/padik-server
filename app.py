@@ -1,395 +1,794 @@
+"""
+Padik Messenger Backend - Flask приложение
+Поддерживает авторизацию через коды подтверждения, чаты и сообщения
+"""
+
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from pymongo import MongoClient
-import os
+from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
+import sqlite3
 import secrets
 import string
-from datetime import datetime
-from dotenv import load_dotenv
-import smtplib
-from email.mime.text import MIMEText
-from email.mime.multipart import MIMEMultipart
+from datetime import datetime, timedelta
+import os
 
-load_dotenv()
-
+# Инициализация Flask приложения
 app = Flask(__name__)
-CORS(app)
 
-# ✅ ИСПРАВЛЕННОЕ ПОДКЛЮЧЕНИЕ К БД
-MONGO_URI = os.getenv("MONGO_URI")
+# Конфигурация JWT
+app.config['JWT_SECRET_KEY'] = os.getenv('JWT_SECRET_KEY', 'padik-secret-key-change-in-production')
+app.config['JWT_ACCESS_TOKEN_EXPIRES'] = timedelta(days=30)
 
-if not MONGO_URI:
-    print("[ERROR] ❌ MONGO_URI не задан в переменных окружения!")
-    print("[ERROR] Пожалуйста, установите MONGO_URI перед запуском сервера")
-    raise ValueError("MONGO_URI environment variable is not set")
+# Инициализация JWT
+jwt = JWTManager(app)
 
-print(f"[STARTUP] Подключаюсь к MongoDB: {MONGO_URI[:50]}...")
+# Включаем CORS для всех маршрутов
+CORS(app, resources={r"/*": {"origins": "*"}})
 
-try:
-    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
-    # Проверяем подключение
-    client.admin.command('ping')
-    print("[STARTUP] ✅ Успешно подключился к MongoDB!")
-except Exception as e:
-    print(f"[ERROR] ❌ Не удалось подключиться к MongoDB: {str(e)}")
-    raise
+# Путь к базе данных
+DB_PATH = 'padik.db'
 
-# ✅ Явно указываем имя базы данных
-db = client.get_database("padik_db")
-users_collection = db.users
-codes_collection = db.codes
+# ============================================================================
+# ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
+# ============================================================================
 
-print("[STARTUP] Коллекции инициализированы")
+def init_db():
+    """Инициализация SQLite базы данных"""
+    conn = sqlite3.connect(DB_PATH)
+    cursor = conn.cursor()
+    
+    # Таблица пользователей
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS users (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT UNIQUE NOT NULL,
+            name TEXT,
+            apartment TEXT,
+            phone TEXT,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Таблица кодов подтверждения
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS verification_codes (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            email TEXT NOT NULL,
+            code TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            expires_at TIMESTAMP NOT NULL
+        )
+    ''')
+    
+    # Таблица чатов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chats (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            name TEXT NOT NULL,
+            description TEXT,
+            type TEXT DEFAULT 'group',
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+        )
+    ''')
+    
+    # Таблица сообщений
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS messages (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            content TEXT NOT NULL,
+            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    # Таблица участников чатов
+    cursor.execute('''
+        CREATE TABLE IF NOT EXISTS chat_members (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            chat_id INTEGER NOT NULL,
+            user_id INTEGER NOT NULL,
+            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+            FOREIGN KEY (chat_id) REFERENCES chats(id),
+            FOREIGN KEY (user_id) REFERENCES users(id)
+        )
+    ''')
+    
+    conn.commit()
+    conn.close()
+    print('[DB] База данных инициализирована')
 
-def normalize_email(email):
-    """Нормализация email: trim и lowercase"""
-    return email.strip().lower()
+# Инициализируем БД при запуске
+init_db()
 
-def generate_code():
-    """Генерируем 6-значный код"""
-    return ''.join(secrets.choice(string.digits) for _ in range(6))
+# ============================================================================
+# ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
+# ============================================================================
 
-def generate_token():
-    """Генерируем уникальный токен"""
-    return secrets.token_urlsafe(32)
+def generate_code(length=4):
+    """Генерация случайного кода подтверждения"""
+    return ''.join(secrets.choice(string.digits) for _ in range(length))
 
-def send_email(to_email, code):
-    """Отправляем код на Gmail"""
-    try:
-        # Получаем учетные данные из переменных окружения
-        sender_email = os.getenv("GMAIL_EMAIL")
-        sender_password = os.getenv("GMAIL_PASSWORD")
-        
-        if not sender_email or not sender_password:
-            print("[EMAIL] ⚠️ GMAIL_EMAIL или GMAIL_PASSWORD не установлены")
-            return False
-        
-        # Создаем письмо
-        message = MIMEMultipart("alternative")
-        message["Subject"] = "Код подтверждения Padik Messenger"
-        message["From"] = sender_email
-        message["To"] = to_email
-        
-        # HTML версия письма
-        html = f"""
-        <html>
-            <body style="font-family: Arial, sans-serif; background-color: #f5f5f5; padding: 20px;">
-                <div style="max-width: 500px; margin: 0 auto; background-color: white; padding: 30px; border-radius: 10px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);">
-                    <h2 style="color: #0a7ea4; text-align: center; margin-bottom: 20px;">Padik Messenger</h2>
-                    <p style="color: #333; font-size: 16px; margin-bottom: 20px;">Ваш код подтверждения:</p>
-                    <div style="background-color: #0a7ea4; color: white; padding: 20px; border-radius: 8px; text-align: center; margin-bottom: 20px;">
-                        <h1 style="margin: 0; font-size: 36px; letter-spacing: 5px;">{code}</h1>
-                    </div>
-                    <p style="color: #666; font-size: 14px; margin-bottom: 10px;">Этот код действителен 15 минут.</p>
-                    <p style="color: #666; font-size: 14px;">Если вы не запрашивали этот код, проигнорируйте это письмо.</p>
-                    <hr style="border: none; border-top: 1px solid #ddd; margin: 20px 0;">
-                    <p style="color: #999; font-size: 12px; text-align: center;">© 2026 Padik Messenger. Все права защищены.</p>
-                </div>
-            </body>
-        </html>
-        """
-        
-        part = MIMEText(html, "html")
-        message.attach(part)
-        
-        # Отправляем письмо
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465) as server:
-            server.login(sender_email, sender_password)
-            server.sendmail(sender_email, to_email, message.as_string())
-        
-        print(f"[EMAIL] ✅ Код отправлен на {to_email}")
-        return True
-        
-    except Exception as e:
-        print(f"[EMAIL] ❌ Ошибка отправки: {str(e)}")
-        return False
+def get_db_connection():
+    """Получение подключения к БД"""
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    return conn
 
-# ✅ ОТПРАВКА КОДА НА ПОЧТУ
+# ============================================================================
+# МАРШРУТЫ АВТОРИЗАЦИИ
+# ============================================================================
+
 @app.route('/send_code', methods=['POST'])
 def send_code():
+    """
+    Отправка кода подтверждения на email
+    POST /send_code
+    Body: {"email": "user@example.com"}
+    """
     try:
         data = request.get_json()
-        email = normalize_email(data.get('email', ''))
+        email = data.get('email', '').strip().lower()
         
         if not email:
             return jsonify({'error': 'Email is required'}), 400
         
-        print(f"[SEND_CODE] Отправляю код для: {email}")
+        # Генерируем код
+        code = generate_code(4)
+        
+        # Сохраняем код в БД
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
         # Удаляем старые коды для этого email
-        codes_collection.delete_many({'email': email})
-        print(f"[SEND_CODE] Удалил старые коды для {email}")
+        cursor.execute('DELETE FROM verification_codes WHERE email = ?', (email,))
         
-        # Генерируем новый код
-        code = generate_code()
-        print(f"[SEND_CODE] Сгенерирован код: {code}")
+        # Сохраняем новый код (действует 10 минут)
+        expires_at = datetime.now() + timedelta(minutes=10)
+        cursor.execute(
+            'INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)',
+            (email, code, expires_at)
+        )
+        conn.commit()
+        conn.close()
         
-        # Сохраняем код в БД (БЕЗ TTL - коды не удаляются автоматически)
-        result = codes_collection.insert_one({
-            'email': email,
-            'code': code,
-            'created_at': datetime.utcnow()
-        })
+        # Выводим код в консоль (вместо отправки по SMTP)
+        print(f'[SEND_CODE] Email: {email}, Code: {code}')
         
-        if result.inserted_id:
-            print(f"[SEND_CODE] Код сохранен в БД для {email}")
-            
-            # ✅ ОТПРАВЛЯЕМ КОД НА РЕАЛЬНЫЙ EMAIL
-            email_sent = send_email(email, code)
-            
-            if email_sent:
-                print(f"[SEND_CODE] ✅ Код успешно отправлен на {email}")
-                return jsonify({
-                    'status': 'ok',
-                    'message': f'Code sent to {email}'
-                }), 200
-            else:
-                print(f"[SEND_CODE] ⚠️ Код сохранен в БД, но не отправлен на email")
-                return jsonify({
-                    'status': 'ok',
-                    'message': f'Code saved but email sending failed',
-                    'code': code  # Показываем код если email не отправился
-                }), 200
-        else:
-            print(f"[SEND_CODE] ❌ Ошибка сохранения кода в БД")
-            return jsonify({'error': 'Failed to save code'}), 500
-            
+        return jsonify({
+            'status': 'ok',
+            'message': f'Code sent to {email}',
+            'debug_code': code  # Убрать в production!
+        }), 200
+    
     except Exception as e:
-        print(f"[SEND_CODE] ❌ Ошибка: {str(e)}")
+        print(f'[ERROR] send_code: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-# ✅ ПРОВЕРКА КОДА (УМНЫЙ ВХОД КАК В TELEGRAM)
 @app.route('/verify_code', methods=['POST'])
 def verify_code():
+    """
+    Проверка кода подтверждения и выдача JWT-токена
+    POST /verify_code
+    Body: {"email": "user@example.com", "code": "1234"}
+    """
     try:
         data = request.get_json()
-        email = normalize_email(data.get('email', ''))
-        code = data.get('code', '')
+        email = data.get('email', '').strip().lower()
+        code = data.get('code', '').strip()
         
         if not email or not code:
             return jsonify({'error': 'Email and code are required'}), 400
         
-        print(f"[VERIFY_CODE] Проверяю код для: {email}")
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
-        # Ищем код в БД
-        code_record = codes_collection.find_one({'email': email, 'code': code})
+        # Проверяем код
+        cursor.execute(
+            'SELECT * FROM verification_codes WHERE email = ? AND code = ? AND expires_at > ?',
+            (email, code, datetime.now())
+        )
+        code_record = cursor.fetchone()
         
         if not code_record:
-            print(f"[VERIFY_CODE] ❌ Код не найден для {email}")
-            # Показываем все коды в БД для отладки
-            all_codes = list(codes_collection.find({'email': email}))
-            print(f"[VERIFY_CODE] Коды в БД для {email}: {all_codes}")
-            return jsonify({'error': 'Invalid code'}), 400
+            conn.close()
+            return jsonify({'error': 'Invalid or expired code'}), 401
         
-        print(f"[VERIFY_CODE] ✅ Код верный!")
+        # Удаляем использованный код
+        cursor.execute('DELETE FROM verification_codes WHERE id = ?', (code_record['id'],))
         
-        # Генерируем токен
-        token = generate_token()
-        print(f"[VERIFY_CODE] Сгенерирован токен: {token[:20]}...")
-        
-        # Проверяем, есть ли уже такой пользователь
-        user = users_collection.find_one({'email': email})
-        
-        if user:
-            # ✅ СЦЕНАРИЙ А: Старый пользователь (вход)
-            print(f"[VERIFY_CODE] Пользователь {email} опознан как СТАРЫЙ")
-            
-            # Обновляем токен и время последнего входа
-            users_collection.update_one(
-                {'email': email},
-                {
-                    '$set': {
-                        'token': token,
-                        'last_login': datetime.utcnow()
-                    }
-                }
-            )
-            
-            print(f"[VERIFY_CODE] Токен обновлен для {email}")
-            
-            return jsonify({
-                'status': 'ok',
-                'is_new_user': False,
-                'token': token,
-                'user': {
-                    'id': str(user.get('_id', '')),
-                    'email': user.get('email'),
-                    'name': user.get('name'),
-                    'date_of_birth': user.get('date_of_birth'),
-                    'avatar_url': user.get('avatar_url'),
-                    'is_online': True
-                }
-            }), 200
-        else:
-            # ✅ СЦЕНАРИЙ Б: Новый пользователь (регистрация)
-            print(f"[VERIFY_CODE] Пользователь {email} опознан как НОВЫЙ")
-            
-            # Создаем временный пользователь с токеном (без имени и даты рождения)
-            new_user = {
-                'email': email,
-                'token': token,
-                'name': None,
-                'date_of_birth': None,
-                'avatar_url': None,
-                'is_online': True,
-                'created_at': datetime.utcnow(),
-                'last_login': datetime.utcnow()
-            }
-            
-            result = users_collection.insert_one(new_user)
-            print(f"[VERIFY_CODE] Новый пользователь создан: {email}")
-            
-            return jsonify({
-                'status': 'ok',
-                'is_new_user': True,
-                'token': token,
-                'user': {
-                    'id': str(result.inserted_id),
-                    'email': email,
-                    'name': None,
-                    'date_of_birth': None,
-                    'avatar_url': None,
-                    'is_online': True
-                }
-            }), 200
-            
-    except Exception as e:
-        print(f"[VERIFY_CODE] ❌ Ошибка: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# ✅ РЕГИСТРАЦИЯ (СОХРАНЕНИЕ ПРОФИЛЯ)
-@app.route('/register', methods=['POST'])
-def register():
-    try:
-        data = request.get_json()
-        email = normalize_email(data.get('email', ''))
-        token = data.get('token', '')
-        name = data.get('name', '')
-        date_of_birth = data.get('date_of_birth')
-        
-        if not email or not token or not name:
-            return jsonify({'error': 'Email, token, name are required'}), 400
-        
-        print(f"[REGISTER] Регистрирую пользователя: {email}")
-        
-        # Ищем пользователя по токену
-        user = users_collection.find_one({'email': email, 'token': token})
+        # Проверяем/создаем пользователя
+        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+        user = cursor.fetchone()
         
         if not user:
-            print(f"[REGISTER] ❌ Пользователь не найден для {email}")
-            return jsonify({'error': 'User not found or invalid token'}), 400
+            # Создаем нового пользователя
+            cursor.execute(
+                'INSERT INTO users (email, name) VALUES (?, ?)',
+                (email, email.split('@')[0])
+            )
+            conn.commit()
+            cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
+            user = cursor.fetchone()
+        
+        conn.close()
+        
+        # Генерируем JWT-токен
+        token = create_access_token(identity=user['id'])
+        
+        print(f'[VERIFY_CODE] ✅ User {email} authenticated, Token: {token[:20]}...')
+        
+        return jsonify({
+            'status': 'ok',
+            'token': token,
+            'user': {
+                'id': user['id'],
+                'email': user['email'],
+                'name': user['name']
+            }
+        }), 200
+    
+    except Exception as e:
+        print(f'[ERROR] verify_code: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# МАРШРУТ АВТОРИЗАЦИИ (HTML страница)
+# ============================================================================
+
+@app.route('/auth', methods=['GET'])
+def auth_page():
+    """
+    HTML страница авторизации для WebView
+    """
+    html = '''
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Padik Web - Авторизация</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+                background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                padding: 20px;
+            }
+            .container {
+                background: rgba(15, 20, 51, 0.8);
+                border: 1px solid #00D9FF;
+                border-radius: 12px;
+                padding: 40px;
+                max-width: 400px;
+                width: 100%;
+                box-shadow: 0 0 30px rgba(0, 217, 255, 0.2);
+            }
+            .logo {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+            .logo h1 {
+                font-size: 48px;
+                color: #00D9FF;
+                text-shadow: 0 0 20px rgba(0, 217, 255, 0.5);
+                margin-bottom: 10px;
+            }
+            .logo p {
+                color: #999;
+                font-size: 14px;
+            }
+            .form-group {
+                margin-bottom: 20px;
+            }
+            label {
+                display: block;
+                color: #ccc;
+                font-size: 14px;
+                font-weight: 600;
+                margin-bottom: 8px;
+            }
+            input {
+                width: 100%;
+                padding: 12px 16px;
+                background: #1a1f3a;
+                border: 1px solid #00D9FF;
+                border-radius: 8px;
+                color: #fff;
+                font-size: 16px;
+                outline: none;
+            }
+            input:focus {
+                box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+            }
+            button {
+                width: 100%;
+                padding: 14px;
+                background: #00D9FF;
+                color: #0a0e27;
+                border: none;
+                border-radius: 8px;
+                font-size: 16px;
+                font-weight: 700;
+                cursor: pointer;
+                margin-top: 20px;
+                box-shadow: 0 0 20px rgba(0, 217, 255, 0.3);
+                transition: all 0.3s ease;
+            }
+            button:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 0 30px rgba(0, 217, 255, 0.5);
+            }
+            button:active {
+                transform: translateY(0);
+            }
+            .message {
+                text-align: center;
+                margin-top: 20px;
+                font-size: 14px;
+                color: #666;
+            }
+            .success {
+                color: #00D9FF;
+            }
+            .error {
+                color: #EF4444;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="logo">
+                <h1>P2</h1>
+                <p>Padik Messenger</p>
+            </div>
+            
+            <div id="emailStep">
+                <form onsubmit="handleSendCode(event)">
+                    <div class="form-group">
+                        <label for="email">Email</label>
+                        <input type="email" id="email" placeholder="example@mail.com" required>
+                    </div>
+                    <button type="submit">Получить код</button>
+                </form>
+            </div>
+            
+            <div id="codeStep" style="display: none;">
+                <form onsubmit="handleVerifyCode(event)">
+                    <div class="form-group">
+                        <label for="code">Код подтверждения</label>
+                        <input type="text" id="code" placeholder="0000" maxlength="4" required>
+                    </div>
+                    <button type="submit">Войти</button>
+                    <button type="button" onclick="backToEmail()" style="background: transparent; color: #00D9FF; border: 1px solid #00D9FF; margin-top: 10px;">← Назад</button>
+                </form>
+            </div>
+            
+            <div id="message" class="message"></div>
+        </div>
+        
+        <script>
+            let userEmail = '';
+            
+            async function handleSendCode(event) {
+                event.preventDefault();
+                const email = document.getElementById('email').value;
+                userEmail = email;
+                
+                try {
+                    const response = await fetch('/send_code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok) {
+                        document.getElementById('emailStep').style.display = 'none';
+                        document.getElementById('codeStep').style.display = 'block';
+                        showMessage('Код отправлен на вашу почту', 'success');
+                    } else {
+                        showMessage(data.error || 'Ошибка', 'error');
+                    }
+                } catch (error) {
+                    showMessage('Ошибка подключения: ' + error.message, 'error');
+                }
+            }
+            
+            async function handleVerifyCode(event) {
+                event.preventDefault();
+                const code = document.getElementById('code').value;
+                
+                try {
+                    const response = await fetch('/verify_code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: userEmail, code })
+                    });
+                    
+                    const data = await response.json();
+                    
+                    if (response.ok && data.token) {
+                        showMessage('✅ Вход выполнен!', 'success');
+                        
+                        // Отправляем токен в приложение через postMessage
+                        if (window.ReactNativeWebView) {
+                            window.ReactNativeWebView.postMessage(JSON.stringify({
+                                type: 'AUTH_SUCCESS',
+                                token: data.token
+                            }));
+                        } else {
+                            // Для тестирования в браузере
+                            localStorage.setItem('auth_token', data.token);
+                            console.log('Token saved:', data.token);
+                        }
+                    } else {
+                        showMessage(data.error || 'Неверный код', 'error');
+                    }
+                } catch (error) {
+                    showMessage('Ошибка подключения: ' + error.message, 'error');
+                }
+            }
+            
+            function backToEmail() {
+                document.getElementById('emailStep').style.display = 'block';
+                document.getElementById('codeStep').style.display = 'none';
+                document.getElementById('message').textContent = '';
+            }
+            
+            function showMessage(text, type) {
+                const msg = document.getElementById('message');
+                msg.textContent = text;
+                msg.className = 'message ' + type;
+            }
+        </script>
+    </body>
+    </html>
+    '''
+    return html, 200, {'Content-Type': 'text/html; charset=utf-8'}
+
+# ============================================================================
+# МАРШРУТЫ ЧАТОВ
+# ============================================================================
+
+@app.route('/api/chats', methods=['GET'])
+@jwt_required()
+def get_chats():
+    """
+    Получение списка чатов для пользователя
+    GET /api/chats
+    Header: Authorization: Bearer <token>
+    """
+    try:
+        user_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Получаем чаты, в которых участвует пользователь
+        cursor.execute('''
+            SELECT c.* FROM chats c
+            JOIN chat_members cm ON c.id = cm.chat_id
+            WHERE cm.user_id = ?
+            ORDER BY c.created_at DESC
+        ''', (user_id,))
+        
+        chats = [dict(row) for row in cursor.fetchall()]
+        
+        # Если нет чатов, создаем тестовые
+        if not chats:
+            test_chats = [
+                ('Общий чат', 'Общее обсуждение'),
+                ('Курилка', 'Неформальное общение'),
+                ('Админка', 'Для администраторов')
+            ]
+            
+            for name, desc in test_chats:
+                cursor.execute(
+                    'INSERT INTO chats (name, description) VALUES (?, ?)',
+                    (name, desc)
+                )
+                conn.commit()
+                chat_id = cursor.lastrowid
+                
+                # Добавляем пользователя в чат
+                cursor.execute(
+                    'INSERT INTO chat_members (chat_id, user_id) VALUES (?, ?)',
+                    (chat_id, user_id)
+                )
+                conn.commit()
+            
+            # Получаем созданные чаты
+            cursor.execute('''
+                SELECT c.* FROM chats c
+                JOIN chat_members cm ON c.id = cm.chat_id
+                WHERE cm.user_id = ?
+                ORDER BY c.created_at DESC
+            ''', (user_id,))
+            
+            chats = [dict(row) for row in cursor.fetchall()]
+        
+        conn.close()
+        
+        return jsonify({
+            'status': 'ok',
+            'chats': chats
+        }), 200
+    
+    except Exception as e:
+        print(f'[ERROR] get_chats: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# МАРШРУТЫ СООБЩЕНИЙ
+# ============================================================================
+
+@app.route('/api/messages', methods=['GET'])
+@jwt_required()
+def get_messages():
+    """
+    Получение сообщений из чата
+    GET /api/messages?chat_id=1
+    Header: Authorization: Bearer <token>
+    """
+    try:
+        user_id = get_jwt_identity()
+        chat_id = request.args.get('chat_id', type=int)
+        
+        if not chat_id:
+            return jsonify({'error': 'chat_id is required'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Получаем сообщения
+        cursor.execute('''
+            SELECT m.id, m.chat_id, m.user_id, m.content, m.created_at,
+                   u.email, u.name
+            FROM messages m
+            JOIN users u ON m.user_id = u.id
+            WHERE m.chat_id = ?
+            ORDER BY m.created_at ASC
+            LIMIT 100
+        ''', (chat_id,))
+        
+        messages = []
+        for row in cursor.fetchall():
+            messages.append({
+                'id': row['id'],
+                'chat_id': row['chat_id'],
+                'user_id': row['user_id'],
+                'content': row['content'],
+                'created_at': row['created_at'],
+                'user': {
+                    'id': row['user_id'],
+                    'email': row['email'],
+                    'name': row['name']
+                }
+            })
+        
+        conn.close()
+        
+        return jsonify({
+            'status': 'ok',
+            'messages': messages
+        }), 200
+    
+    except Exception as e:
+        print(f'[ERROR] get_messages: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/messages', methods=['POST'])
+@jwt_required()
+def send_message():
+    """
+    Отправка сообщения в чат
+    POST /api/messages
+    Body: {"chat_id": 1, "content": "Hello"}
+    Header: Authorization: Bearer <token>
+    """
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        chat_id = data.get('chat_id')
+        content = data.get('content', '').strip()
+        
+        if not chat_id or not content:
+            return jsonify({'error': 'chat_id and content are required'}), 400
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        # Сохраняем сообщение
+        cursor.execute(
+            'INSERT INTO messages (chat_id, user_id, content) VALUES (?, ?, ?)',
+            (chat_id, user_id, content)
+        )
+        conn.commit()
+        message_id = cursor.lastrowid
+        
+        # Получаем сохраненное сообщение
+        cursor.execute('''
+            SELECT m.id, m.chat_id, m.user_id, m.content, m.created_at,
+                   u.email, u.name
+            FROM messages m
+            JOIN users u ON m.user_id = u.id
+            WHERE m.id = ?
+        ''', (message_id,))
+        
+        row = cursor.fetchone()
+        conn.close()
+        
+        message = {
+            'id': row['id'],
+            'chat_id': row['chat_id'],
+            'user_id': row['user_id'],
+            'content': row['content'],
+            'created_at': row['created_at'],
+            'user': {
+                'id': row['user_id'],
+                'email': row['email'],
+                'name': row['name']
+            }
+        }
+        
+        print(f'[MESSAGE] User {user_id} sent message to chat {chat_id}: {content}')
+        
+        return jsonify({
+            'status': 'ok',
+            'message': message
+        }), 201
+    
+    except Exception as e:
+        print(f'[ERROR] send_message: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+# ============================================================================
+# МАРШРУТЫ ПРОФИЛЯ
+# ============================================================================
+
+@app.route('/api/profile', methods=['GET'])
+@jwt_required()
+def get_profile():
+    """
+    Получение профиля пользователя
+    GET /api/profile
+    Header: Authorization: Bearer <token>
+    """
+    try:
+        user_id = get_jwt_identity()
+        conn = get_db_connection()
+        cursor = conn.cursor()
+        
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
+        
+        if not user:
+            return jsonify({'error': 'User not found'}), 404
+        
+        return jsonify({
+            'status': 'ok',
+            'user': dict(user)
+        }), 200
+    
+    except Exception as e:
+        print(f'[ERROR] get_profile: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/api/profile', methods=['PUT'])
+@jwt_required()
+def update_profile():
+    """
+    Обновление профиля пользователя
+    PUT /api/profile
+    Body: {"name": "John", "apartment": "101", "phone": "+1234567890"}
+    Header: Authorization: Bearer <token>
+    """
+    try:
+        user_id = get_jwt_identity()
+        data = request.get_json()
+        
+        conn = get_db_connection()
+        cursor = conn.cursor()
         
         # Обновляем профиль
-        users_collection.update_one(
-            {'email': email},
-            {
-                '$set': {
-                    'name': name,
-                    'date_of_birth': date_of_birth,
-                    'updated_at': datetime.utcnow()
-                }
-            }
-        )
+        cursor.execute('''
+            UPDATE users
+            SET name = ?, apartment = ?, phone = ?
+            WHERE id = ?
+        ''', (
+            data.get('name'),
+            data.get('apartment'),
+            data.get('phone'),
+            user_id
+        ))
+        conn.commit()
         
-        print(f"[REGISTER] ✅ Профиль обновлен: {email}")
+        # Получаем обновленный профиль
+        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
+        user = cursor.fetchone()
+        conn.close()
         
-        # Возвращаем обновленные данные
-        updated_user = users_collection.find_one({'email': email})
-        
-        return jsonify({
-            'status': 'ok',
-            'message': 'Registration completed',
-            'user': {
-                'id': str(updated_user.get('_id', '')),
-                'email': updated_user.get('email'),
-                'name': updated_user.get('name'),
-                'date_of_birth': updated_user.get('date_of_birth'),
-                'avatar_url': updated_user.get('avatar_url'),
-                'is_online': True
-            }
-        }), 200
-        
-    except Exception as e:
-        print(f"[REGISTER] ❌ Ошибка: {str(e)}")
-        return jsonify({'error': str(e)}), 500
-
-# ✅ ПРОВЕРКА СЕССИИ (ПРИ ЗАПУСКЕ ПРИЛОЖЕНИЯ)
-@app.route('/verify_session', methods=['POST'])
-def verify_session():
-    try:
-        data = request.get_json()
-        token = data.get('token', '')
-        
-        if not token:
-            return jsonify({'error': 'Token is required'}), 400
-        
-        print(f"[VERIFY_SESSION] Проверяю токен: {token[:20]}...")
-        
-        # Ищем пользователя по токену
-        user = users_collection.find_one({'token': token})
-        
-        if not user:
-            print(f"[VERIFY_SESSION] ❌ Токен не найден или истек")
-            return jsonify({'error': 'Invalid or expired token'}), 401
-        
-        print(f"[VERIFY_SESSION] ✅ Токен валиден для {user.get('email')}")
-        
-        # Обновляем время последнего входа
-        users_collection.update_one(
-            {'token': token},
-            {'$set': {'last_login': datetime.utcnow()}}
-        )
+        print(f'[PROFILE] User {user_id} updated profile')
         
         return jsonify({
             'status': 'ok',
-            'user': {
-                'id': str(user.get('_id', '')),
-                'email': user.get('email'),
-                'name': user.get('name'),
-                'date_of_birth': user.get('date_of_birth'),
-                'avatar_url': user.get('avatar_url'),
-                'is_online': True
-            }
+            'user': dict(user)
         }), 200
-        
+    
     except Exception as e:
-        print(f"[VERIFY_SESSION] ❌ Ошибка: {str(e)}")
+        print(f'[ERROR] update_profile: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
-# ✅ ВЫХОД ИЗ АККАУНТА
-@app.route('/logout', methods=['POST'])
-def logout():
-    try:
-        data = request.get_json()
-        token = data.get('token', '')
-        
-        if not token:
-            return jsonify({'error': 'Token is required'}), 400
-        
-        print(f"[LOGOUT] Выход пользователя с токеном: {token[:20]}...")
-        
-        # Обнуляем токен в БД
-        result = users_collection.update_one(
-            {'token': token},
-            {'$set': {'token': None, 'is_online': False}}
-        )
-        
-        if result.matched_count > 0:
-            print(f"[LOGOUT] ✅ Пользователь вышел")
-            return jsonify({'status': 'ok', 'message': 'Logged out successfully'}), 200
-        else:
-            print(f"[LOGOUT] ❌ Пользователь не найден")
-            return jsonify({'error': 'User not found'}), 400
-            
-    except Exception as e:
-        print(f"[LOGOUT] ❌ Ошибка: {str(e)}")
-        return jsonify({'error': str(e)}), 500
+# ============================================================================
+# HEALTH CHECK
+# ============================================================================
 
-# ✅ ЗДОРОВЬЕ СЕРВЕРА
 @app.route('/health', methods=['GET'])
 def health():
-    return jsonify({'status': 'ok', 'message': 'Server is running'}), 200
+    """Health check маршрут"""
+    return jsonify({'status': 'ok', 'message': 'Padik Backend is running'}), 200
+
+# ============================================================================
+# ГЛАВНАЯ СТРАНИЦА
+# ============================================================================
+
+@app.route('/', methods=['GET'])
+def index():
+    """Главная страница с информацией об API"""
+    return jsonify({
+        'name': 'Padik Messenger Backend',
+        'version': '1.0.0',
+        'endpoints': {
+            'auth': {
+                'POST /send_code': 'Отправка кода подтверждения',
+                'POST /verify_code': 'Проверка кода и получение токена',
+                'GET /auth': 'HTML страница авторизации'
+            },
+            'chats': {
+                'GET /api/chats': 'Получение списка чатов (требует токен)'
+            },
+            'messages': {
+                'GET /api/messages': 'Получение сообщений (требует токен)',
+                'POST /api/messages': 'Отправка сообщения (требует токен)'
+            },
+            'profile': {
+                'GET /api/profile': 'Получение профиля (требует токен)',
+                'PUT /api/profile': 'Обновление профиля (требует токен)'
+            }
+        }
+    }), 200
+
+# ============================================================================
+# ОБРАБОТКА ОШИБОК
+# ============================================================================
+
+@app.errorhandler(404)
+def not_found(error):
+    return jsonify({'error': 'Not found'}), 404
+
+@app.errorhandler(500)
+def internal_error(error):
+    return jsonify({'error': 'Internal server error'}), 500
+
+# ============================================================================
+# ЗАПУСК ПРИЛОЖЕНИЯ
+# ============================================================================
 
 if __name__ == '__main__':
-    print("[STARTUP] ✅ Padik Messenger сервер готов к работе!")
-    app.run(debug=True, host='0.0.0.0', port=int(os.getenv('PORT', 5000)))
+    print('[STARTUP] Padik Backend starting...')
+    print('[STARTUP] Database: ' + DB_PATH)
+    print('[STARTUP] CORS enabled for all origins')
+    print('[STARTUP] JWT enabled')
+    app.run(debug=True, host='0.0.0.0', port=5000)
