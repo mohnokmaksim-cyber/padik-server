@@ -121,6 +121,10 @@ def generate_code(length=6):
 
 def send_email(to_email, subject, html_content):
     try:
+        print(f'[EMAIL] Отправка письма на {to_email}')
+        print(f'[EMAIL] SMTP_SERVER: {SMTP_SERVER}, SMTP_PORT: {SMTP_PORT}')
+        print(f'[EMAIL] SMTP_EMAIL: {SMTP_EMAIL}')
+        
         message = MIMEMultipart('alternative')
         message['Subject'] = subject
         message['From'] = SMTP_EMAIL
@@ -128,17 +132,24 @@ def send_email(to_email, subject, html_content):
         message.attach(MIMEText(html_content, 'html'))
         
         if SMTP_USE_TLS:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT)
+            print(f'[EMAIL] Подключение с TLS...')
+            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
             server.starttls()
         else:
-            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT)
+            print(f'[EMAIL] Подключение с SSL...')
+            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
         
+        print(f'[EMAIL] Вход в систему...')
         server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        print(f'[EMAIL] Отправка письма...')
         server.sendmail(SMTP_EMAIL, to_email, message.as_string())
         server.quit()
+        print(f'[EMAIL] ✅ Письмо успешно отправлено на {to_email}')
         return True
     except Exception as e:
-        print(f'[EMAIL ERROR] {str(e)}')
+        print(f'[EMAIL ERROR] ❌ Ошибка: {str(e)}')
+        import traceback
+        traceback.print_exc()
         return False
 
 def send_push_notification(user_id, title, body, data=None):
@@ -210,8 +221,8 @@ def send_code():
             'expires_at': expires_at
         })
         
-        html = f'<h1>Ваш код: {code}</h1><p>Действует 10 минут</p>'
-        email_sent = send_email(email, 'Padik Code', html)
+        html = f'''<html><body style="font-family: Arial, sans-serif; background: #f5f5f5; padding: 20px;"><div style="max-width: 600px; margin: 0 auto; background: white; border-radius: 10px; padding: 30px; box-shadow: 0 2px 10px rgba(0,0,0,0.1);"><h1 style="color: #00D9FF; text-align: center; margin-bottom: 30px;">Padik Messenger</h1><p style="color: #333; font-size: 16px; text-align: center; margin-bottom: 20px;">Ваш код подтверждения:</p><div style="background: #00D9FF; color: white; font-size: 32px; font-weight: bold; text-align: center; padding: 20px; border-radius: 10px; letter-spacing: 5px; margin: 30px 0;">{code}</div><p style="color: #666; font-size: 14px; text-align: center; margin-top: 20px;">Код действует <strong>10 минут</strong></p><p style="color: #999; font-size: 12px; text-align: center; margin-top: 30px; border-top: 1px solid #eee; padding-top: 20px;">Если вы не запрашивали этот код, проигнорируйте это письмо.</p></div></body></html>'''
+        email_sent = send_email(email, 'Padik Messenger - Код подтверждения', html)
         
         return jsonify({
             'status': 'ok',
