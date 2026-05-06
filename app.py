@@ -40,15 +40,19 @@ CORS(app)
 # MONGODB
 # ============================================================================
 
-MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/padik')
+MONGO_URI = os.getenv('MONGO_URI')
+if not MONGO_URI:
+    print('[ERROR] MONGO_URI не установлена в переменных окружения!')
+    exit(1)
+
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command('ping')
     db = client.get_database()
     print('[DB] ✅ MongoDB подключена')
-except:
-    client = MongoClient('mongodb://localhost:27017/padik')
-    db = client.padik
+except Exception as e:
+    print(f'[ERROR] Ошибка подключения к MongoDB: {e}')
+    exit(1)
 
 users_col = db.users
 messages_col = db.messages
