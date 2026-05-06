@@ -804,6 +804,431 @@ def index():
     }), 200
 
 # ============================================================================
+# HTML ЭКРАН АВТОРИЗАЦИИ
+# ============================================================================
+
+@app.route('/auth', methods=['GET'])
+def auth_page():
+    """HTML страница авторизации и регистрации"""
+    return '''
+    <!DOCTYPE html>
+    <html lang="ru">
+    <head>
+        <meta charset="UTF-8">
+        <meta name="viewport" content="width=device-width, initial-scale=1.0">
+        <title>Padik Messenger - Авторизация</title>
+        <style>
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+
+            body {
+                font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+                background: linear-gradient(135deg, #0a0e27 0%, #1a1f3a 100%);
+                min-height: 100vh;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                color: #fff;
+            }
+
+            .container {
+                width: 100%;
+                max-width: 400px;
+                padding: 20px;
+            }
+
+            .card {
+                background: rgba(26, 31, 58, 0.8);
+                border: 1px solid rgba(0, 217, 255, 0.3);
+                border-radius: 16px;
+                padding: 40px 30px;
+                box-shadow: 0 8px 32px rgba(0, 217, 255, 0.1);
+                backdrop-filter: blur(10px);
+            }
+
+            .logo {
+                text-align: center;
+                margin-bottom: 30px;
+            }
+
+            .logo h1 {
+                font-size: 48px;
+                color: #00D9FF;
+                text-shadow: 0 0 20px rgba(0, 217, 255, 0.5);
+                margin-bottom: 10px;
+            }
+
+            .logo p {
+                color: #999;
+                font-size: 14px;
+            }
+
+            .form-group {
+                margin-bottom: 20px;
+            }
+
+            .form-group label {
+                display: block;
+                margin-bottom: 8px;
+                font-size: 14px;
+                color: #ccc;
+            }
+
+            .form-group input {
+                width: 100%;
+                padding: 12px 16px;
+                border: 1px solid rgba(0, 217, 255, 0.3);
+                border-radius: 8px;
+                background: rgba(10, 14, 39, 0.5);
+                color: #fff;
+                font-size: 14px;
+                transition: all 0.3s ease;
+            }
+
+            .form-group input:focus {
+                outline: none;
+                border-color: #00D9FF;
+                box-shadow: 0 0 10px rgba(0, 217, 255, 0.3);
+            }
+
+            .form-group input::placeholder {
+                color: #666;
+            }
+
+            .btn {
+                width: 100%;
+                padding: 12px 16px;
+                border: none;
+                border-radius: 8px;
+                font-size: 14px;
+                font-weight: 600;
+                cursor: pointer;
+                transition: all 0.3s ease;
+                text-transform: uppercase;
+                letter-spacing: 0.5px;
+            }
+
+            .btn-primary {
+                background: linear-gradient(135deg, #00D9FF 0%, #0099CC 100%);
+                color: #000;
+                margin-bottom: 12px;
+            }
+
+            .btn-primary:hover {
+                transform: translateY(-2px);
+                box-shadow: 0 8px 20px rgba(0, 217, 255, 0.4);
+            }
+
+            .btn-secondary {
+                background: rgba(0, 217, 255, 0.1);
+                color: #00D9FF;
+                border: 1px solid rgba(0, 217, 255, 0.3);
+            }
+
+            .btn-secondary:hover {
+                background: rgba(0, 217, 255, 0.2);
+            }
+
+            .divider {
+                text-align: center;
+                margin: 20px 0;
+                color: #666;
+                font-size: 12px;
+            }
+
+            .divider::before,
+            .divider::after {
+                content: '';
+                display: inline-block;
+                width: 40%;
+                height: 1px;
+                background: rgba(0, 217, 255, 0.2);
+                vertical-align: middle;
+            }
+
+            .divider::before {
+                margin-right: 10px;
+            }
+
+            .divider::after {
+                margin-left: 10px;
+            }
+
+            .error {
+                background: rgba(239, 68, 68, 0.1);
+                border: 1px solid rgba(239, 68, 68, 0.5);
+                color: #ff6b6b;
+                padding: 12px 16px;
+                border-radius: 8px;
+                font-size: 14px;
+                margin-bottom: 20px;
+                display: none;
+            }
+
+            .success {
+                background: rgba(34, 197, 94, 0.1);
+                border: 1px solid rgba(34, 197, 94, 0.5);
+                color: #4ade80;
+                padding: 12px 16px;
+                border-radius: 8px;
+                font-size: 14px;
+                margin-bottom: 20px;
+                display: none;
+            }
+
+            .loading {
+                display: none;
+                text-align: center;
+                color: #00D9FF;
+            }
+
+            .spinner {
+                display: inline-block;
+                width: 20px;
+                height: 20px;
+                border: 3px solid rgba(0, 217, 255, 0.3);
+                border-top-color: #00D9FF;
+                border-radius: 50%;
+                animation: spin 0.8s linear infinite;
+                margin-right: 10px;
+                vertical-align: middle;
+            }
+
+            @keyframes spin {
+                to { transform: rotate(360deg); }
+            }
+
+            .step {
+                display: none;
+            }
+
+            .step.active {
+                display: block;
+            }
+
+            .code-input {
+                display: flex;
+                gap: 8px;
+                margin-bottom: 20px;
+            }
+
+            .code-input input {
+                width: 50px;
+                height: 50px;
+                text-align: center;
+                font-size: 24px;
+                font-weight: bold;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="container">
+            <div class="card">
+                <div class="logo">
+                    <h1>P</h1>
+                    <p>Padik Messenger</p>
+                </div>
+
+                <div class="error" id="error"></div>
+                <div class="success" id="success"></div>
+
+                <!-- Шаг 1: Email -->
+                <div class="step active" id="step-email">
+                    <h2 style="font-size: 20px; margin-bottom: 20px; text-align: center;">Вход или регистрация</h2>
+                    <div class="form-group">
+                        <label>Email</label>
+                        <input type="email" id="email" placeholder="your@email.com" />
+                    </div>
+                    <button class="btn btn-primary" onclick="checkEmail()">Продолжить</button>
+                </div>
+
+                <!-- Шаг 2: Код -->
+                <div class="step" id="step-code">
+                    <h2 style="font-size: 20px; margin-bottom: 20px; text-align: center;">Введите код</h2>
+                    <p style="text-align: center; color: #999; margin-bottom: 20px; font-size: 14px;" id="email-display"></p>
+                    <div class="form-group">
+                        <label>Код подтверждения</label>
+                        <input type="text" id="code" placeholder="000000" maxlength="6" />
+                    </div>
+                    <button class="btn btn-primary" onclick="verifyCode()">Подтвердить</button>
+                    <button class="btn btn-secondary" onclick="goBack()">Назад</button>
+                </div>
+
+                <!-- Шаг 3: Успех -->
+                <div class="step" id="step-success">
+                    <div style="text-align: center;">
+                        <div style="font-size: 48px; margin-bottom: 20px;">✓</div>
+                        <h2 style="margin-bottom: 20px;">Добро пожаловать!</h2>
+                        <p style="color: #999; margin-bottom: 30px;">Ваш токен скопирован в буфер обмена</p>
+                        <div style="background: rgba(0, 217, 255, 0.1); border: 1px solid rgba(0, 217, 255, 0.3); border-radius: 8px; padding: 16px; margin-bottom: 20px; word-break: break-all; font-size: 12px; color: #00D9FF;" id="token-display"></div>
+                        <button class="btn btn-primary" onclick="copyToken()">Скопировать токен</button>
+                    </div>
+                </div>
+
+                <div class="loading" id="loading">
+                    <span class="spinner"></span>
+                    <span>Загрузка...</span>
+                </div>
+            </div>
+        </div>
+
+        <script>
+            const API_URL = window.location.origin;
+            let currentEmail = '';
+            let currentToken = '';
+
+            function showError(message) {
+                const errorEl = document.getElementById('error');
+                errorEl.textContent = message;
+                errorEl.style.display = 'block';
+                setTimeout(() => {
+                    errorEl.style.display = 'none';
+                }, 5000);
+            }
+
+            function showSuccess(message) {
+                const successEl = document.getElementById('success');
+                successEl.textContent = message;
+                successEl.style.display = 'block';
+                setTimeout(() => {
+                    successEl.style.display = 'none';
+                }, 5000);
+            }
+
+            function showLoading(show) {
+                document.getElementById('loading').style.display = show ? 'block' : 'none';
+            }
+
+            function switchStep(from, to) {
+                document.getElementById(from).classList.remove('active');
+                document.getElementById(to).classList.add('active');
+            }
+
+            async function checkEmail() {
+                const email = document.getElementById('email').value.trim();
+
+                if (!email) {
+                    showError('Введите email');
+                    return;
+                }
+
+                showLoading(true);
+
+                try {
+                    const response = await fetch(API_URL + '/check_email', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        showError(data.error || 'Ошибка');
+                        showLoading(false);
+                        return;
+                    }
+
+                    currentEmail = email;
+                    document.getElementById('email-display').textContent = `Код отправлен на ${email}`;
+
+                    // Отправляем код
+                    const codeResponse = await fetch(API_URL + '/send_code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email })
+                    });
+
+                    const codeData = await codeResponse.json();
+
+                    if (!codeResponse.ok) {
+                        showError(codeData.error || 'Ошибка отправки кода');
+                        showLoading(false);
+                        return;
+                    }
+
+                    showSuccess('Код отправлен на вашу почту');
+                    switchStep('step-email', 'step-code');
+                    document.getElementById('code').focus();
+                } catch (error) {
+                    showError('Ошибка: ' + error.message);
+                } finally {
+                    showLoading(false);
+                }
+            }
+
+            async function verifyCode() {
+                const code = document.getElementById('code').value.trim();
+
+                if (!code || code.length !== 6) {
+                    showError('Введите 6-значный код');
+                    return;
+                }
+
+                showLoading(true);
+
+                try {
+                    const response = await fetch(API_URL + '/verify_code', {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({ email: currentEmail, code })
+                    });
+
+                    const data = await response.json();
+
+                    if (!response.ok) {
+                        showError(data.error || 'Неверный код');
+                        showLoading(false);
+                        return;
+                    }
+
+                    currentToken = data.token;
+                    document.getElementById('token-display').textContent = data.token;
+
+                    // Копируем токен в буфер обмена
+                    navigator.clipboard.writeText(data.token).catch(() => {});
+
+                    switchStep('step-code', 'step-success');
+                } catch (error) {
+                    showError('Ошибка: ' + error.message);
+                } finally {
+                    showLoading(false);
+                }
+            }
+
+            function goBack() {
+                document.getElementById('code').value = '';
+                switchStep('step-code', 'step-email');
+                document.getElementById('email').focus();
+            }
+
+            function copyToken() {
+                navigator.clipboard.writeText(currentToken).then(() => {
+                    showSuccess('Токен скопирован!');
+                }).catch(() => {
+                    showError('Ошибка копирования');
+                });
+            }
+
+            // Enter для отправки
+            document.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    if (document.getElementById('step-email').classList.contains('active')) {
+                        checkEmail();
+                    } else if (document.getElementById('step-code').classList.contains('active')) {
+                        verifyCode();
+                    }
+                }
+            });
+        </script>
+    </body>
+    </html>
+    '''
+
+# ============================================================================
 # ЗАПУСК
 # ============================================================================
 
