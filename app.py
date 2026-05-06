@@ -48,8 +48,14 @@ if not MONGO_URI:
 try:
     client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
     client.admin.command('ping')
-    db = client.get_database()
-    print('[DB] ✅ MongoDB подключена')
+    # Получить имя БД из MONGO_URI
+    from urllib.parse import urlparse
+    parsed = urlparse(MONGO_URI)
+    db_name = parsed.path.lstrip('/')
+    if not db_name:
+        db_name = 'padik'
+    db = client[db_name]
+    print(f'[DB] ✅ MongoDB подключена к БД: {db_name}')
 except Exception as e:
     print(f'[ERROR] Ошибка подключения к MongoDB: {e}')
     exit(1)
