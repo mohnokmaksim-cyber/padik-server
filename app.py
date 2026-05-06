@@ -1,5 +1,5 @@
 """
-Padik Messenger Backend - Flask приложение v2
+Padik Messenger Backend - Flask приложение v2 с MongoDB
 Авторизация/Регистрация через email и коды подтверждения
 Отправка кодов на реальную почту через SMTP
 """
@@ -7,7 +7,8 @@ Padik Messenger Backend - Flask приложение v2
 from flask import Flask, request, jsonify
 from flask_cors import CORS
 from flask_jwt_extended import JWTManager, create_access_token, jwt_required, get_jwt_identity
-import sqlite3
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 import secrets
 import string
 from datetime import datetime, timedelta
@@ -30,106 +31,47 @@ jwt = JWTManager(app)
 CORS(app, resources={r"/*": {"origins": "*"}})
 
 # ============================================================================
-# КОНФИГУРАЦИЯ SMTP
+# КОНФИГУРАЦИЯ MONGODB
 # ============================================================================
 
-# Используйте переменные окружения для безопасности!
-# Пример для Gmail:
-# SMTP_SERVER = "smtp.gmail.com"
-# SMTP_PORT = 587
-# SMTP_EMAIL = "your-email@gmail.com"
-# SMTP_PASSWORD = "your-app-password"  # Используйте App Password, не основной пароль!
+MONGO_URI = os.getenv('MONGO_URI', 'mongodb://localhost:27017/padik')
 
-# Пример для Yandex Mail:
-# SMTP_SERVER = "smtp.yandex.ru"
-# SMTP_PORT = 465
-# SMTP_EMAIL = "your-email@yandex.ru"
-# SMTP_PASSWORD = "your-password"
+try:
+    client = MongoClient(MONGO_URI, serverSelectionTimeoutMS=5000)
+    # Проверяем подключение
+    client.admin.command('ping')
+    db = client.get_database()
+    print('[DB] ✅ MongoDB подключена успешно')
+except Exception as e:
+    print(f'[DB] ❌ Ошибка подключения к MongoDB: {str(e)}')
+    print('[DB] Используем локальный MongoDB...')
+    client = MongoClient('mongodb://localhost:27017/padik')
+    db = client.padik
+
+# Коллекции
+users_collection = db.users
+verification_codes_collection = db.verification_codes
+chats_collection = db.chats
+chat_members_collection = db.chat_members
+messages_collection = db.messages
+
+# Создаем индексы
+users_collection.create_index('email', unique=True)
+verification_codes_collection.create_index('email')
+verification_codes_collection.create_index('expires_at', expireAfterSeconds=0)
+messages_collection.create_index('chat_id')
+chat_members_collection.create_index('chat_id')
+chat_members_collection.create_index('user_id')
+
+# ============================================================================
+# КОНФИГУРАЦИЯ SMTP
+# ============================================================================
 
 SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
 SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
 SMTP_EMAIL = os.getenv('SMTP_EMAIL', 'your-email@gmail.com')
 SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', 'your-app-password')
 SMTP_USE_TLS = os.getenv('SMTP_USE_TLS', 'True') == 'True'
-
-# Путь к базе данных
-DB_PATH = 'padik.db'
-
-# ============================================================================
-# ИНИЦИАЛИЗАЦИЯ БАЗЫ ДАННЫХ
-# ============================================================================
-
-def init_db():
-    """Инициализация базы данных"""
-    conn = sqlite3.connect(DB_PATH)
-    cursor = conn.cursor()
-    
-    # Таблица пользователей
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT UNIQUE NOT NULL,
-            name TEXT,
-            phone TEXT,
-            bio TEXT,
-            avatar_url TEXT,
-            apartment TEXT,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Таблица кодов подтверждения
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS verification_codes (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            email TEXT NOT NULL,
-            code TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            expires_at TIMESTAMP NOT NULL
-        )
-    ''')
-    
-    # Таблица чатов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chats (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            name TEXT,
-            is_group INTEGER DEFAULT 0,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-        )
-    ''')
-    
-    # Таблица участников чатов
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS chat_members (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            joined_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (chat_id) REFERENCES chats(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    ''')
-    
-    # Таблица сообщений
-    cursor.execute('''
-        CREATE TABLE IF NOT EXISTS messages (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            chat_id INTEGER NOT NULL,
-            user_id INTEGER NOT NULL,
-            content TEXT NOT NULL,
-            created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
-            FOREIGN KEY (chat_id) REFERENCES chats(id),
-            FOREIGN KEY (user_id) REFERENCES users(id)
-        )
-    ''')
-    
-    conn.commit()
-    conn.close()
-    print('[DB] База данных инициализирована')
-
-# Инициализируем БД при запуске
-init_db()
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -138,12 +80,6 @@ init_db()
 def generate_code(length=6):
     """Генерация случайного кода подтверждения"""
     return ''.join(secrets.choice(string.digits) for _ in range(length))
-
-def get_db_connection():
-    """Получение подключения к БД"""
-    conn = sqlite3.connect(DB_PATH)
-    conn.row_factory = sqlite3.Row
-    return conn
 
 def send_email(to_email, subject, html_content):
     """
@@ -209,6 +145,13 @@ def send_verification_code_email(to_email, code):
     
     return send_email(to_email, 'Код подтверждения Padik Messenger', html_content)
 
+def user_to_dict(user):
+    """Конвертирует MongoDB документ в словарь"""
+    if user:
+        user['id'] = str(user['_id'])
+        user.pop('_id', None)
+    return user
+
 # ============================================================================
 # МАРШРУТЫ АВТОРИЗАЦИИ
 # ============================================================================
@@ -227,12 +170,7 @@ def check_email():
         if not email:
             return jsonify({'error': 'Email is required'}), 400
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT id FROM users WHERE email = ?', (email,))
-        user = cursor.fetchone()
-        conn.close()
-        
+        user = users_collection.find_one({'email': email})
         exists = user is not None
         
         return jsonify({
@@ -263,21 +201,17 @@ def send_code():
         # Генерируем код
         code = generate_code(6)
         
-        # Сохраняем код в БД
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
         # Удаляем старые коды для этого email
-        cursor.execute('DELETE FROM verification_codes WHERE email = ?', (email,))
+        verification_codes_collection.delete_many({'email': email})
         
         # Сохраняем новый код (действует 10 минут)
         expires_at = datetime.now() + timedelta(minutes=10)
-        cursor.execute(
-            'INSERT INTO verification_codes (email, code, expires_at) VALUES (?, ?, ?)',
-            (email, code, expires_at)
-        )
-        conn.commit()
-        conn.close()
+        verification_codes_collection.insert_one({
+            'email': email,
+            'code': code,
+            'created_at': datetime.now(),
+            'expires_at': expires_at
+        })
         
         # Отправляем код на почту
         email_sent = send_verification_code_email(email, code)
@@ -312,57 +246,52 @@ def verify_code():
             return jsonify({'error': 'Email and code are required'}), 400
         
         # Проверяем код в БД
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'SELECT * FROM verification_codes WHERE email = ? AND code = ? AND expires_at > ?',
-            (email, code, datetime.now())
-        )
-        verification = cursor.fetchone()
+        verification = verification_codes_collection.find_one({
+            'email': email,
+            'code': code,
+            'expires_at': {'$gt': datetime.now()}
+        })
         
         if not verification:
-            conn.close()
             return jsonify({'error': 'Invalid or expired code'}), 401
         
         # Удаляем использованный код
-        cursor.execute('DELETE FROM verification_codes WHERE id = ?', (verification['id'],))
+        verification_codes_collection.delete_one({'_id': verification['_id']})
         
         # Проверяем, существует ли пользователь
-        cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
-        user = cursor.fetchone()
+        user = users_collection.find_one({'email': email})
         
         is_new_user = False
         if not user:
             # Создаем нового пользователя
             is_new_user = True
-            cursor.execute(
-                'INSERT INTO users (email, name) VALUES (?, ?)',
-                (email, email.split('@')[0])
-            )
-            conn.commit()
-            
-            # Получаем созданного пользователя
-            cursor.execute('SELECT * FROM users WHERE email = ?', (email,))
-            user = cursor.fetchone()
+            result = users_collection.insert_one({
+                'email': email,
+                'name': email.split('@')[0],
+                'phone': '',
+                'bio': '',
+                'avatar_url': '',
+                'apartment': '',
+                'created_at': datetime.now()
+            })
+            user = users_collection.find_one({'_id': result.inserted_id})
         
         # Генерируем JWT-токен
-        token = create_access_token(identity=user['id'])
+        token = create_access_token(identity=str(user['_id']))
         
         action = 'registered' if is_new_user else 'authenticated'
         print(f'[VERIFY_CODE] ✅ User {email} {action}, Token: {token[:20]}...')
         
-        conn.commit()
-        conn.close()
+        user_dict = user_to_dict(user)
         
         return jsonify({
             'status': 'ok',
             'token': token,
             'is_new_user': is_new_user,
             'user': {
-                'id': user['id'],
-                'email': user['email'],
-                'name': user['name']
+                'id': user_dict['id'],
+                'email': user_dict['email'],
+                'name': user_dict['name']
             }
         }), 200
     
@@ -724,18 +653,13 @@ def get_chats():
     try:
         user_id = get_jwt_identity()
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        chats = list(chats_collection.find({
+            '_id': {'$in': [ObjectId(chat['chat_id']) for chat in chat_members_collection.find({'user_id': ObjectId(user_id)})]}
+        }).sort('created_at', -1))
         
-        cursor.execute('''
-            SELECT c.* FROM chats c
-            JOIN chat_members cm ON c.id = cm.chat_id
-            WHERE cm.user_id = ?
-            ORDER BY c.created_at DESC
-        ''', (user_id,))
-        
-        chats = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        for chat in chats:
+            chat['id'] = str(chat['_id'])
+            chat.pop('_id', None)
         
         return jsonify({
             'status': 'ok',
@@ -751,28 +675,31 @@ def get_chats():
 def get_messages():
     """
     Получение сообщений из чата
-    GET /api/messages?chat_id=1
+    GET /api/messages?chat_id=<chat_id>
     Header: Authorization: Bearer <token>
     """
     try:
         user_id = get_jwt_identity()
-        chat_id = request.args.get('chat_id', type=int)
+        chat_id = request.args.get('chat_id')
         
         if not chat_id:
             return jsonify({'error': 'chat_id is required'}), 400
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
+        messages = list(messages_collection.find({
+            'chat_id': ObjectId(chat_id)
+        }).sort('created_at', 1))
         
-        cursor.execute('''
-            SELECT m.*, u.name, u.avatar_url FROM messages m
-            JOIN users u ON m.user_id = u.id
-            WHERE m.chat_id = ?
-            ORDER BY m.created_at ASC
-        ''', (chat_id,))
-        
-        messages = [dict(row) for row in cursor.fetchall()]
-        conn.close()
+        for msg in messages:
+            msg['id'] = str(msg['_id'])
+            msg['chat_id'] = str(msg['chat_id'])
+            msg['user_id'] = str(msg['user_id'])
+            msg.pop('_id', None)
+            
+            # Получаем информацию о пользователе
+            user = users_collection.find_one({'_id': ObjectId(msg['user_id'])})
+            if user:
+                msg['user_name'] = user.get('name', 'Unknown')
+                msg['user_avatar'] = user.get('avatar_url', '')
         
         return jsonify({
             'status': 'ok',
@@ -789,7 +716,7 @@ def send_message():
     """
     Отправка сообщения в чат
     POST /api/messages
-    Body: {"chat_id": 1, "content": "Hello"}
+    Body: {"chat_id": "<chat_id>", "content": "Hello"}
     Header: Authorization: Bearer <token>
     """
     try:
@@ -801,22 +728,16 @@ def send_message():
         if not chat_id or not content:
             return jsonify({'error': 'chat_id and content are required'}), 400
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute(
-            'INSERT INTO messages (chat_id, user_id, content) VALUES (?, ?, ?)',
-            (chat_id, user_id, content)
-        )
-        conn.commit()
-        
-        cursor.execute('SELECT last_insert_rowid() as id')
-        message_id = cursor.fetchone()['id']
-        conn.close()
+        result = messages_collection.insert_one({
+            'chat_id': ObjectId(chat_id),
+            'user_id': ObjectId(user_id),
+            'content': content,
+            'created_at': datetime.now()
+        })
         
         return jsonify({
             'status': 'ok',
-            'message_id': message_id
+            'message_id': str(result.inserted_id)
         }), 201
     
     except Exception as e:
@@ -838,18 +759,16 @@ def get_profile():
     try:
         user_id = get_jwt_identity()
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        cursor.execute('SELECT * FROM users WHERE id = ?', (user_id,))
-        user = cursor.fetchone()
-        conn.close()
+        user = users_collection.find_one({'_id': ObjectId(user_id)})
         
         if not user:
             return jsonify({'error': 'User not found'}), 404
         
+        user_dict = user_to_dict(user)
+        
         return jsonify({
             'status': 'ok',
-            'user': dict(user)
+            'user': user_dict
         }), 200
     
     except Exception as e:
@@ -869,22 +788,22 @@ def update_profile():
         user_id = get_jwt_identity()
         data = request.get_json()
         
-        name = data.get('name', '').strip()
-        phone = data.get('phone', '').strip()
-        bio = data.get('bio', '').strip()
-        avatar_url = data.get('avatar_url', '').strip()
-        apartment = data.get('apartment', '').strip()
+        update_data = {}
+        if 'name' in data:
+            update_data['name'] = data['name'].strip()
+        if 'phone' in data:
+            update_data['phone'] = data['phone'].strip()
+        if 'bio' in data:
+            update_data['bio'] = data['bio'].strip()
+        if 'avatar_url' in data:
+            update_data['avatar_url'] = data['avatar_url'].strip()
+        if 'apartment' in data:
+            update_data['apartment'] = data['apartment'].strip()
         
-        conn = get_db_connection()
-        cursor = conn.cursor()
-        
-        cursor.execute('''
-            UPDATE users SET name = ?, phone = ?, bio = ?, avatar_url = ?, apartment = ?
-            WHERE id = ?
-        ''', (name, phone, bio, avatar_url, apartment, user_id))
-        
-        conn.commit()
-        conn.close()
+        users_collection.update_one(
+            {'_id': ObjectId(user_id)},
+            {'$set': update_data}
+        )
         
         return jsonify({
             'status': 'ok',
@@ -905,7 +824,8 @@ def health():
     return jsonify({
         'status': 'ok',
         'service': 'Padik Messenger Backend',
-        'version': '2.0'
+        'version': '2.0',
+        'database': 'MongoDB'
     }), 200
 
 @app.route('/', methods=['GET'])
@@ -914,7 +834,8 @@ def index():
     return jsonify({
         'name': 'Padik Messenger Backend',
         'version': '2.0',
-        'description': 'Flask backend для мессенджера Padik',
+        'description': 'Flask backend для мессенджера Padik с MongoDB',
+        'database': 'MongoDB',
         'endpoints': {
             'auth': [
                 'POST /check_email - Проверка существования email',
@@ -944,7 +865,7 @@ def index():
 
 if __name__ == '__main__':
     print('[STARTUP] Padik Backend starting...')
-    print('[STARTUP] Database: ' + DB_PATH)
+    print('[STARTUP] Database: MongoDB')
     print('[STARTUP] CORS enabled for all origins')
     print('[STARTUP] JWT enabled')
     
@@ -954,3 +875,4 @@ if __name__ == '__main__':
         port=int(os.getenv('PORT', 5000)),
         debug=os.getenv('FLASK_ENV', 'development') == 'development'
     )
+
