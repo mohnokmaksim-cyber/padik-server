@@ -12,6 +12,7 @@ import string
 import smtplib
 import pyotp
 import qrcode
+import requests
 from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
@@ -83,13 +84,9 @@ messages_col.create_index('created_at')
 # SMTP КОНФИГУРАЦИЯ
 # ============================================================================
 
-SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
-SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
-SMTP_EMAIL = os.getenv('SMTP_EMAIL', 'your-email@gmail.com')
-SMTP_PASSWORD = os.getenv('SMTP_PASSWORD', 'your-password')
-SMTP_USE_TLS = os.getenv('SMTP_USE_TLS', 'True') == 'True'
-
-print(f'[SMTP] Сервер: {SMTP_SERVER}:{SMTP_PORT}, Email: {SMTP_EMAIL}')
+# SMTP микросервис на Railway
+SMTP_MICROSERVICE_URL = os.getenv('SMTP_MICROSERVICE_URL', 'https://web-production-4e5a.up.railway.app')
+print(f'[SMTP] Микросервис: {SMTP_MICROSERVICE_URL}')
 
 # ============================================================================
 # ВСПОМОГАТЕЛЬНЫЕ ФУНКЦИИ
@@ -100,28 +97,27 @@ def generate_code(length=6):
     return ''.join(secrets.choice(string.digits) for _ in range(length))
 
 def send_email(to_email, subject, html_content):
-    """Отправляет email"""
+    """Отправляет email через SMTP микросервис на Railway"""
     try:
         print(f'[EMAIL] Отправка письма на {to_email}')
         
-        message = MIMEMultipart('alternative')
-        message['Subject'] = subject
-        message['From'] = SMTP_EMAIL
-        message['To'] = to_email
-        message.attach(MIMEText(html_content, 'html'))
+        # Отправляем запрос на SMTP микросервис
+        response = requests.post(
+            f'{SMTP_MICROSERVICE_URL}/send',
+            json={
+                'to': to_email,
+                'subject': subject,
+                'html': html_content
+            },
+            timeout=10
+        )
         
-        if SMTP_USE_TLS:
-            server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=10)
-            server.starttls()
+        if response.status_code == 200:
+            print(f'[EMAIL] ✅ Письмо отправлено на {to_email}')
+            return True
         else:
-            server = smtplib.SMTP_SSL(SMTP_SERVER, SMTP_PORT, timeout=10)
-        
-        server.login(SMTP_EMAIL, SMTP_PASSWORD)
-        server.sendmail(SMTP_EMAIL, to_email, message.as_string())
-        server.quit()
-        
-        print(f'[EMAIL] ✅ Письмо отправлено на {to_email}')
-        return True
+            print(f'[EMAIL ERROR] ❌ Статус: {response.status_code}, Ответ: {response.text}')
+            return False
     except Exception as e:
         print(f'[EMAIL ERROR] ❌ {str(e)}')
         return False
