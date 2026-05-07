@@ -98,29 +98,51 @@ def generate_code(length=6):
     return ''.join(secrets.choice(string.digits) for _ in range(length))
 
 def send_email(to_email, subject, html_content):
-    """Отправляет email через SMTP микросервис на Railway"""
+    """Отправляет email через SMTP сервер"""
     try:
         print(f'[EMAIL] Отправка письма на {to_email}')
         
-        # Отправляем запрос на SMTP микросервис с большим timeout
-        response = requests.post(
-            f'{SMTP_MICROSERVICE_URL}/send',
-            json={
-                'to': to_email,
-                'subject': subject,
-                'html': html_content
-            },
-            timeout=30  # Увеличили timeout с 10 на 30 секунд
-        )
+        # SMTP параметры
+        SMTP_SERVER = os.getenv('SMTP_SERVER', 'smtp.gmail.com')
+        SMTP_PORT = int(os.getenv('SMTP_PORT', '587'))
+        SMTP_EMAIL = os.getenv('SMTP_EMAIL')
+        SMTP_PASSWORD = os.getenv('SMTP_PASSWORD')
+        SMTP_USE_TLS = os.getenv('SMTP_USE_TLS', 'True').lower() == 'true'
         
-        if response.status_code == 200:
-            print(f'[EMAIL] ✅ Письмо отправлено на {to_email}')
-            return True
-        else:
-            print(f'[EMAIL ERROR] ❌ Статус: {response.status_code}, Ответ: {response.text}')
+        if not SMTP_EMAIL or not SMTP_PASSWORD:
+            print(f'[EMAIL ERROR] ❌ SMTP учетные данные не установлены')
             return False
-    except requests.exceptions.Timeout:
-        print(f'[EMAIL ERROR] ❌ Timeout при отправке на {to_email}')
+        
+        # Создаем сообщение
+        msg = MIMEMultipart('alternative')
+        msg['Subject'] = subject
+        msg['From'] = SMTP_EMAIL
+        msg['To'] = to_email
+        
+        # Добавляем HTML контент
+        msg.attach(MIMEText(html_content, 'html'))
+        
+        # Подключаемся к SMTP серверу
+        print(f'[EMAIL] Подключение к {SMTP_SERVER}:{SMTP_PORT}')
+        server = smtplib.SMTP(SMTP_SERVER, SMTP_PORT, timeout=30)
+        
+        if SMTP_USE_TLS:
+            server.starttls()
+        
+        # Логинимся
+        server.login(SMTP_EMAIL, SMTP_PASSWORD)
+        
+        # Отправляем письмо
+        server.sendmail(SMTP_EMAIL, to_email, msg.as_string())
+        server.quit()
+        
+        print(f'[EMAIL] ✅ Письмо отправлено на {to_email}')
+        return True
+    except smtplib.SMTPAuthenticationError:
+        print(f'[EMAIL ERROR] ❌ Ошибка аутентификации SMTP')
+        return False
+    except smtplib.SMTPException as e:
+        print(f'[EMAIL ERROR] ❌ SMTP ошибка: {str(e)}')
         return False
     except Exception as e:
         print(f'[EMAIL ERROR] ❌ {str(e)}')
