@@ -13,6 +13,7 @@ import smtplib
 import pyotp
 import qrcode
 import requests
+import hashlib
 from io import BytesIO
 from datetime import datetime, timedelta
 from urllib.parse import urlparse
@@ -152,6 +153,10 @@ def message_to_dict(msg):
 # АВТОРИЗАЦИЯ
 # ============================================================================
 
+def hash_password(password):
+    """Хеширует пароль"""
+    return hashlib.sha256(password.encode()).hexdigest()
+
 @app.route('/check_email', methods=['POST'])
 def check_email():
     """Проверяет существование email"""
@@ -171,6 +176,101 @@ def check_email():
             'action': 'login' if user else 'register'
         }), 200
     except Exception as e:
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/register', methods=['POST'])
+def register():
+    """Регистрирует пользователя с email и паролем"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password', '').strip()
+        name = data.get('name', email.split('@')[0]).strip()
+        
+        if not email or '@' not in email:
+            return jsonify({'error': 'Valid email required'}), 400
+        
+        if not password or len(password) < 4:
+            return jsonify({'error': 'Password must be at least 4 characters'}), 400
+        
+        # Проверяем существует ли пользователь
+        existing_user = users_col.find_one({'email': email})
+        if existing_user:
+            return jsonify({'error': 'Email already registered'}), 400
+        
+        # Создаем пользователя
+        hashed_password = hash_password(password)
+        result = users_col.insert_one({
+            'email': email,
+            'password': hashed_password,
+            'name': name,
+            'phone': '',
+            'bio': '',
+            'avatar_url': '',
+            'apartment': '',
+            'created_at': datetime.now(),
+            'updated_at': datetime.now()
+        })
+        
+        # Создаем JWT токен
+        token = create_access_token(identity=str(result.inserted_id))
+        user = users_col.find_one({'_id': result.inserted_id})
+        user_dict = user_to_dict(user)
+        
+        return jsonify({
+            'status': 'ok',
+            'token': token,
+            'is_new_user': True,
+            'user': {
+                'id': user_dict['id'],
+                'email': user_dict['email'],
+                'name': user_dict['name']
+            }
+        }), 200
+    except Exception as e:
+        print(f'[ERROR] register: {str(e)}')
+        return jsonify({'error': str(e)}), 500
+
+@app.route('/login', methods=['POST'])
+def login():
+    """Логинит пользователя с email и паролем"""
+    try:
+        data = request.get_json()
+        email = data.get('email', '').strip().lower()
+        password = data.get('password', '').strip()
+        
+        if not email or '@' not in email:
+            return jsonify({'error': 'Valid email required'}), 400
+        
+        if not password:
+            return jsonify({'error': 'Password required'}), 400
+        
+        # Ищем пользователя
+        user = users_col.find_one({'email': email})
+        if not user:
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        # Проверяем пароль
+        hashed_password = hash_password(password)
+        if user.get('password') != hashed_password:
+            return jsonify({'error': 'Invalid email or password'}), 401
+        
+        # Создаем JWT токен
+        token = create_access_token(identity=str(user['_id']))
+        user_dict = user_to_dict(user)
+        
+        return jsonify({
+            'status': 'ok',
+            'token': token,
+            'is_new_user': False,
+            'user': {
+                'id': user_dict['id'],
+                'email': user_dict['email'],
+                'name': user_dict['name']
+            }
+        }), 200
+    except Exception as e:
+        print(f'[ERROR] login: {str(e)}')
         return jsonify({'error': str(e)}), 500
 
 @app.route('/send_code', methods=['POST'])
