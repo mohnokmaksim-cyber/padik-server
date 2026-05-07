@@ -101,7 +101,7 @@ def send_email(to_email, subject, html_content):
     try:
         print(f'[EMAIL] Отправка письма на {to_email}')
         
-        # Отправляем запрос на SMTP микросервис
+        # Отправляем запрос на SMTP микросервис с большим timeout
         response = requests.post(
             f'{SMTP_MICROSERVICE_URL}/send',
             json={
@@ -109,7 +109,7 @@ def send_email(to_email, subject, html_content):
                 'subject': subject,
                 'html': html_content
             },
-            timeout=10
+            timeout=30  # Увеличили timeout с 10 на 30 секунд
         )
         
         if response.status_code == 200:
@@ -118,6 +118,9 @@ def send_email(to_email, subject, html_content):
         else:
             print(f'[EMAIL ERROR] ❌ Статус: {response.status_code}, Ответ: {response.text}')
             return False
+    except requests.exceptions.Timeout:
+        print(f'[EMAIL ERROR] ❌ Timeout при отправке на {to_email}')
+        return False
     except Exception as e:
         print(f'[EMAIL ERROR] ❌ {str(e)}')
         return False
